@@ -16,3 +16,12 @@ go2_guardian:
     vueltas_rad: 4.0            # rad girados en vueltas_s s sin alejarse 0.5 m = da vueltas -> quieto. 0 = no revisar
     vueltas_s: 8.0
     coherencia_m: 0.05          # girando en el sitio el lidar debe quedar >0.05 m delante del centro (sano ~0.2). 0 = no revisar
+    # suavizado de ordenes (sin tirones ni cambios de sentido de golpe). suavizar: false = como antes
+    suavizar: true
+    acc_lin: 0.8                # m/s^2 al acelerar adelante/atras (0 -> 0.4 m/s en 0.5 s)
+    dec_lin: 1.5                # m/s^2 al frenar
+    acc_lat: 0.6                # de lado
+    dec_lat: 1.2
+    acc_giro: 2.0               # rad/s^2 al empezar a girar (0 -> 60 grados/s en 0.5 s)
+    dec_giro: 3.0               # rad/s^2 al dejar de girar o cambiar de sentido
+    tau_giro: 0.15              # s: filtro del giro (se come el temblor; mas alto = mas suave y mas lento)

@@ -54,7 +54,11 @@ class NodoGuardian(Node):
                           vueltas_rad=float(P("vueltas_rad", 4.0).value),
                           vueltas_s=float(P("vueltas_s", 8.0).value),
                           sensor_x=float(P("sensorOffsetX", 0.3).value),
-                          coherencia_m=float(P("coherencia_m", 0.05).value))
+                          coherencia_m=float(P("coherencia_m", 0.05).value),
+                          suavizado=(None if not bool(P("suavizar", True).value) else
+                                     {k: float(P(k, v).value) for k, v in (
+                                         ("acc_lin", 0.8), ("dec_lin", 1.5), ("acc_lat", 0.6), ("dec_lat", 1.2),
+                                         ("acc_giro", 2.0), ("dec_giro", 3.0), ("tau_giro", 0.15))}))
         self.apagar_evita = bool(P("apagar_evitacion_unitree", True).value)
         self.lock = threading.Lock()
         self.ids = itertools.count(int(time.time() * 1000) % 1_000_000_000)   # seguro entre hilos

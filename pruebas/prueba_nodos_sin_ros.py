@@ -247,9 +247,10 @@ def probar_guardian():
             lazo()
 
     del req[:]
-    correr(0.5, vx=0.5)
+    correr(1.0, vx=0.5)                       # con suavizado llega a 0.5 m/s en ~0.6 s (rampa)
     apis = [r.header.identity.api_id for r in req]
-    assert apis.count(API_MOVE) >= 20, apis
+    assert apis.count(API_MOVE) >= 40, apis
+    assert json.loads(req[0].parameter)["x"] < 0.05                     # arranca suave
     assert json.loads(req[-1].parameter) == {"x": 0.5, "y": 0.0, "z": 0.0}
     # el planificador se calla -> StopMove
     del req[:]

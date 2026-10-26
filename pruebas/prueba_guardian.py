@@ -273,6 +273,43 @@ def main():
                 g.pose(t, L * math.cos(yaw), L * math.sin(yaw), yaw)
         assert parado == debe_parar, (L, parado, g.centros[-3:])
     assert "slam-reset" in g.motivo_parada
+    # SUAVIZADO: arranca en rampa, el giro cambia de sentido pasando por cero sin saltos, frena en rampa
+    S = {"acc_lin": 0.8, "dec_lin": 1.5, "acc_lat": 0.6, "dec_lat": 1.2, "acc_giro": 2.0, "dec_giro": 3.0,
+         "tau_giro": 0.15}
+    g = Guardian(suavizado=S)
+    envs = []
+    for k in range(150):                                    # 3 s: adelante 0.4 y girar +1, despues -1
+        t = k * 0.02
+        g.terreno(t)
+        g.orden(t, 0.4, 0.0, 1.0 if t < 1.5 else -1.0)
+        o = g.paso(t)
+        envs += [p for a, p in o if a == API_MOVE]
+    xs = [e["x"] for e in envs]
+    zs = [e["z"] for e in envs]
+    assert xs[0] < 0.05 and abs(xs[-1] - 0.4) < 1e-6                      # rampa, no salto a 0.4
+    assert max(abs(b - a) for a, b in zip(xs, xs[1:])) <= 0.8 * 0.02 + 1e-6
+    assert max(abs(b - a) for a, b in zip(zs, zs[1:])) <= 3.0 * 0.02 + 1e-6   # sin tirones en el giro
+    assert zs[-1] < -0.9 and any(abs(z) < 0.07 for z in zs)                # cambio de sentido pasando por 0
+    # el planificador manda parar: frena en rampa (menos de 0.5 s) y despues StopMove
+    o = []
+    for k in range(40):
+        t = 3.0 + k * 0.02
+        g.terreno(t)
+        g.orden(t, 0.0, 0.0, 0.0)
+        o += g.paso(t)
+    movs = [p["x"] for a, p in o if a == API_MOVE]
+    assert movs and movs[0] < 0.4 and API_STOPMOVE in apis(o) and len(movs) <= 25, (len(movs), movs[:3])
+    # parada de SEGURIDAD: instantanea, sin rampa
+    g = Guardian(suavizado=S, lidar_max=0.5)
+    for k in range(100):
+        g.lidar(k * 0.02)
+        g.terreno(k * 0.02)
+        g.orden(k * 0.02, 0.4, 0.0, 0.0)
+        g.paso(k * 0.02)
+    g.terreno(3.0)
+    g.orden(3.0, 0.4, 0.0, 0.0)
+    o = g.paso(3.0)                                         # 1 s sin lidar
+    assert API_STOPMOVE in apis(o) and API_MOVE not in apis(o)
     print("OK guardian")
 
 

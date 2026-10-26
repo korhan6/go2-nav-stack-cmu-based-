@@ -43,7 +43,7 @@ class Guardian(object):
     def __init__(self, vx_max=1.0, vy_max=0.6, wz_max=1.5, vigencia=0.25, periodo=0.02,
                  freewalk=True, zona_muerta=0.01, v_min_caminar=0.0, odom_max=0.6, terreno_max=1.5,
                  lidar_max=0.0, giro_max=0.0, salto_vel=0.0, salto_giro=0.0, vueltas_rad=0.0,
-                 vueltas_s=8.0, sensor_x=0.3, coherencia_m=0.0):
+                 vueltas_s=8.0, sensor_x=0.3, coherencia_m=0.0, suavizado=None):
         self.vx_max, self.vy_max, self.wz_max = vx_max, vy_max, wz_max
         self.vigencia = vigencia
         self.periodo = periodo
@@ -84,6 +84,13 @@ class Guardian(object):
         # menos 'coherencia_m' m detras del lidar (mediana de 15 giros), el SLAM esta corrido -> quieto
         # hasta slam-reset. 0 = no revisar
         self.coherencia_m = coherencia_m
+        # SUAVIZADO de las ordenes (26/10: giraba brusco y los motores cambiaban de sentido de golpe, "tras
+        # tras"): cada eje sube/baja con aceleracion limitada (m/s^2, rad/s^2), frenar es mas rapido que
+        # arrancar, un cambio de sentido pasa por cero de a poco, y el giro ademas va por un filtro pasa-bajos
+        # (tau s) que se come el temblor de la orden de giro. Las paradas de SEGURIDAD siguen instantaneas.
+        # None = sin suavizado. dict: acc_lin, dec_lin, acc_lat, dec_lat, acc_giro, dec_giro, tau_giro
+        self.suavizado = suavizado
+        self.suave = (0.0, 0.0, 0.0)
         self.envios = []            # [(t, vx, vy, wz enviados)]
         self.poses = []             # [(t, x, y, yaw)]
         self.centros = []           # distancia lidar -> centro de giro, una por giro en el sitio
@@ -209,8 +216,27 @@ class Guardian(object):
         """/joy de 'go2v2 manejar': solo el gatillo R2 (manual sin evasion), sin combinaciones."""
         self.manual = len(ejes) > EJE_R2 and ejes[EJE_R2] < -0.1
 
+    def _suavizar(self, vx, vy, wz):
+        s = self.suavizado
+        dt = self.periodo
+        px, py, pw = self.suave
+
+        def lim(p, objetivo, sube, baja):
+            # mas rapido en el mismo sentido -> 'sube'; frenar o cambiar de sentido -> 'baja' (pasa por 0)
+            a = sube if (abs(objetivo) > abs(p) and objetivo * p >= 0) else baja
+            d = objetivo - p
+            return p + max(-a * dt, min(a * dt, d))
+        nx = lim(px, vx, s["acc_lin"], s["dec_lin"])
+        ny = lim(py, vy, s["acc_lat"], s["dec_lat"])
+        # filtro solo mientras gira (para frenar no: el filtro haria la parada lenta)
+        wf = wz if wz == 0.0 else pw + (wz - pw) * min(1.0, dt / max(s["tau_giro"], 1e-3))
+        nw = lim(pw, wf, s["acc_giro"], s["dec_giro"])
+        self.suave = (nx, ny, nw)
+        return nx, ny, nw
+
     def _cortar(self, t):
         """Deja de caminar YA: StopMove ahora y otro un poco despues (por si se pierde uno)."""
+        self.suave = (0.0, 0.0, 0.0)
         self.cmd = (0.0, 0.0, 0.0)
         self.t_cmd = -1e9
         self.moviendo = False
@@ -389,6 +415,10 @@ class Guardian(object):
         vx, vy = vx * k, vy * k
         wz = recortar(self.cmd[2], self.wz_max)
         z = self.zona_muerta
+        objetivo_cero = abs(vx) < z and abs(vy) < z and abs(wz) < z
+        if self.suavizado is not None and (self.moviendo or not objetivo_cero):
+            vx, vy, wz = self._suavizar(0.0 if objetivo_cero else vx, 0.0 if objetivo_cero else vy,
+                                        0.0 if objetivo_cero else wz)
         if abs(vx) < z and abs(vy) < z and abs(wz) < z:
             if self.moviendo:
                 out += self._cortar(t)

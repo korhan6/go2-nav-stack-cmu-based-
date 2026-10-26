@@ -1,0 +1,101 @@
+<launch>
+  <!-- Go2 v2 en SIMULACION: el simulador de CMU (Unity + vehicleSimulator) en vez del perro.
+       Lo mismo que system_simulation[_with_route_planner].launch de CMU, con estos cambios:
+         * el pathFollower NO le habla a ningun perro (is_real_robot=false);
+         * go2_guardian corre igual que con el perro, pero sus pedidos van a /sim/api/sport/request
+           (nunca a un perro real) y su /stop SI frena al simulado (pausa, acostar, bloquear);
+         * FAR con RViz opcional, igual que go2_v2.launch.
+       Se prueba: evasion, rutas (FAR), control PS4, go2v2 ir/guardar/parar/pausa/estado, el guardian.
+       NO se prueba: Point-LIO, go2_sensores, la calibracion, las posturas reales del perro. -->
+
+  <arg name="ruta" default="true"/>
+  <arg name="rviz" default="true"/>
+  <arg name="maxSpeed" default="1.0"/>
+  <arg name="autonomySpeed" default="1.0"/>
+  <arg name="world_name" default="unity"/>
+  <arg name="vehicleHeight" default="0.366"/>
+  <arg name="vehicleX" default="0.0"/>
+  <arg name="vehicleY" default="0.0"/>
+  <arg name="terrainZ" default="0.0"/>
+  <arg name="vehicleYaw" default="0.0"/>
+  <arg name="checkTerrainConn" default="true"/>
+
+  <node pkg="joy" exec="joy_node" name="ps3_joy" output="screen" >
+    <param name="dev" value="/dev/input/js0" />
+    <param name="device_id" value="0" />
+    <param name="deadzone" value="0.12" />
+    <param name="autorepeat_rate" value="0.0" />
+  </node>
+
+  <include file="$(find-pkg-share local_planner)/launch/local_planner.launch" >
+    <arg name="goalX" value="$(var vehicleX)"/>
+    <arg name="goalY" value="$(var vehicleY)"/>
+    <arg name="maxSpeed" value="$(var maxSpeed)"/>
+    <arg name="autonomySpeed" value="$(var autonomySpeed)"/>
+    <arg name="is_real_robot" value="false"/>
+  </include>
+
+  <include file="$(find-pkg-share terrain_analysis)/launch/terrain_analysis.launch" />
+
+  <include file="$(find-pkg-share terrain_analysis_ext)/launch/terrain_analysis_ext.launch" >
+    <arg name="checkTerrainConn" value="$(var checkTerrainConn)"/>
+  </include>
+
+  <include file="$(find-pkg-share vehicle_simulator)/launch/vehicle_simulator.launch" >
+    <arg name="vehicleHeight" value="$(var vehicleHeight)"/>
+    <arg name="vehicleX" value="$(var vehicleX)"/>
+    <arg name="vehicleY" value="$(var vehicleY)"/>
+    <arg name="terrainZ" value="$(var terrainZ)"/>
+    <arg name="vehicleYaw" value="$(var vehicleYaw)"/>
+  </include>
+
+  <include file="$(find-pkg-share sensor_scan_generation)/launch/sensor_scan_generation.launch" />
+
+  <include file="$(find-pkg-share visualization_tools)/launch/visualization_tools.launch" >
+    <arg name="world_name" value="$(var world_name)"/>
+  </include>
+
+  <!-- puente con Unity (el simulador 3D) -->
+  <node pkg="ros_tcp_endpoint" exec="default_server_endpoint" name="endpoint" output="screen">
+    <param name="ROS_IP" value="0.0.0.0"/>
+    <param name="ROS_TCP_PORT" value="10000"/>
+  </node>
+
+  <group if="$(var ruta)">
+    <node pkg="far_planner" exec="far_planner" name="far_planner" output="screen" respawn="true" respawn_delay="2.0">
+      <param from="$(find-pkg-share far_planner)/config/default.yaml" />
+      <param name="use_sim_time" value="false" />
+      <remap from="/odom_world" to="/state_estimation" />
+      <remap from="/terrain_cloud" to="/terrain_map_ext" />
+      <remap from="/scan_cloud" to="/terrain_map" />
+      <remap from="/terrain_local_cloud" to="/registered_scan" />
+    </node>
+    <include file="$(find-pkg-share graph_decoder)/launch/decoder.launch" />
+    <node launch-prefix="nice" pkg="rviz2" exec="rviz2" name="far_rviz" if="$(var rviz)"
+          args="-d $(find-pkg-share go2_v2)/rviz/go2_rutas.rviz" />
+  </group>
+
+  <group unless="$(var ruta)">
+    <node launch-prefix="nice" pkg="rviz2" exec="rviz2" name="rvizGA" if="$(var rviz)"
+          args="-d $(find-pkg-share go2_v2)/rviz/go2_local.rviz"/>
+  </group>
+
+  <!-- el guardian, igual que con el perro, pero hablandole a NADIE -->
+  <node pkg="go2_v2" exec="guardian" name="go2_guardian" output="screen">
+    <param from="$(find-pkg-share go2_v2)/config/guardian.yaml" />
+    <param name="apagar_evitacion_unitree" value="false" />
+    <remap from="/api/sport/request" to="/sim/api/sport/request" />
+    <remap from="/api/obstacles_avoid/request" to="/sim/api/obstacles_avoid/request" />
+  </node>
+
+
+  <!-- el modelo 3D del Go2 en RViz: urdf + angulos reales de las patas, pegado al marco 'vehicle'
+       de CMU (centro del cuerpo; base_link esta 1 cm mas adelante: el L1 va a 0.289 m y CMU usa 0.3) -->
+  <node pkg="robot_state_publisher" exec="robot_state_publisher" name="go2_robot_state" output="log">
+    <param name="robot_description" value="$(command 'cat $(find-pkg-share go2_v2)/urdf/go2.urdf')" />
+  </node>
+  <node pkg="go2_v2" exec="modelo" name="go2_modelo" output="log" />
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="go2_vehicle_a_base"
+        args="0.0 0 0 0 0 0 /vehicle /base_link"/>
+
+</launch>

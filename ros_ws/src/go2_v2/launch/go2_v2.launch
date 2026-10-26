@@ -1,0 +1,298 @@
+<launch>
+  <!-- Go2 v2 = stack de CMU (autonomy_stack_go2) + go2_v2. Igual que system_real_robot[_with_route_planner]
+       de CMU, con dos cambios: los sensores los transforma go2_sensores (vectorizado, sin la demora de
+       1 s de la version Python de CMU) y al perro le habla SOLO go2_guardian (watchdog, acostar,
+       bloquear, pausa); el pathFollower de CMU va con is_real_robot=false (publica /cmd_vel). -->
+
+  <arg name="ruta" default="true"/>              <!-- true: FAR planner (rutas largas, mapa de visibilidad) -->
+  <arg name="rviz" default="true"/>
+  <arg name="maxSpeed" default="1.0"/>           <!-- m/s, el tope del planificador local -->
+  <arg name="autonomySpeed" default="1.0"/>      <!-- m/s navegando sola -->
+  <arg name="sensorOffsetX" default="0.3"/>
+  <arg name="sensorOffsetY" default="0.0"/>
+  <arg name="cameraOffsetZ" default="0.0"/>
+  <arg name="checkTerrainConn" default="true"/>
+  <arg name="joystick" default="true"/>
+  <arg name="ancho_ruta" default="0.45"/>
+  <arg name="directo_max" default="3.0"/>
+  <!-- planificador de rutas: 'propio' = A* (go2_v2/ruta.py) sobre el mapa de terreno, la ruta se ve en
+       RViz (Ruta, violeta). 'far' = FAR de CMU (rutas largas por lugares desconocidos). 26/10: FAR mandaba
+       way_points para todos lados al cruzar la puerta. -->
+  <arg name="planificador" default="propio"/>
+  <!-- mapa:=ultimo carga el ultimo mapa guardado ('go2v2 mapa'). El perro tiene que arrancar en el MISMO
+       lugar y mirando hacia el mismo lado que cuando se guardo (el SLAM empieza donde se prende) -->
+  <arg name="mapa" default=""/>         <!-- m: metas mas cerca que esto (y a la vista) van sin FAR -->         <!-- m: ancho del perro para FAR (rutas largas) -->
+
+  <node pkg="joy" exec="joy_node" name="ps3_joy" output="screen" if="$(var joystick)">
+    <param name="dev" value="/dev/input/js0" />
+    <param name="device_id" value="0" />
+    <param name="deadzone" value="0.12" />
+    <param name="autorepeat_rate" value="0.0" />
+    <remap from="/joy" to="/joy_ps4" />
+  </node>
+  <!-- PS4: por defecto SIN evasion (stick izq adelante/girar, der de lado); OPTIONS cambia a CON evasion -->
+  <arg name="ps4_sin_evasion" default="true"/>
+  <node pkg="go2_v2" exec="ps4" name="go2_ps4" output="screen" respawn="true" if="$(var joystick)">
+    <param name="sin_evasion" value="$(var ps4_sin_evasion)" />
+  </node>
+
+  <!-- sensores del L1 -> marco 'body' (reemplaza transform_everything.py de CMU) -->
+  <node pkg="go2_v2" exec="sensores" name="go2_sensores" output="screen" respawn="true" respawn_delay="1.0"/>
+
+  <!-- SLAM: Point-LIO con la IMU del L1 (mismos parametros que mapping_utlidar.launch de CMU) -->
+  <!-- respawn: 'go2v2 slam-reset' lo mata y arranca de nuevo (mapa desde cero) sin relanzar todo -->
+  <node pkg="point_lio_unilidar" exec="pointlio_mapping" name="laserMapping" output="screen" respawn="true" respawn_delay="2.0">
+    <param from="$(find-pkg-share point_lio_unilidar)/config/utlidar.yaml" />
+    <param name="use_imu_as_input" value="false"/>
+    <param name="prop_at_freq_of_imu" value="true"/>
+    <param name="check_satu" value="true"/>
+    <param name="init_map_size" value="10"/>
+    <param name="point_filter_num" value="1"/>
+    <param name="space_down_sample" value="true" />
+    <param name="filter_size_surf" value="0.1" />
+    <param name="filter_size_map" value="0.1" />
+    <param name="cube_side_length" value="1000.0" />
+    <param name="runtime_pos_log_enable" value="false" />
+    <remap from="/cloud_registered" to="/registered_scan" />
+    <remap from="/aft_mapped_to_init" to="/state_estimation" />
+  </node>
+
+  <!-- planificador local (biblioteca de trayectorias, ~100 Hz) + seguidor de ruta -->
+  <!-- planificador local + seguidor: lo mismo que local_planner.launch de CMU, con numeros para el Go2.
+       EL "HITBOX": CMU revisa choques en un radio de 0.55 m x pathScale alrededor de cada camino. Con
+       pathScale 0.75 (CMU) el perro necesita un pasillo de ~0.8 m; si no hay camino, CMU achica la escala
+       de a pathScaleStep hasta minPathScale. Aca baja hasta 'escala_min' (0.45 = pasillo de ~0.5 m; el
+       Go2 mide ~0.31 m de ancho, ~0.40 con las patas) en pasos de 0.1: busca camino ancho primero y se
+       aprieta solo si hace falta. escala_min:=0.5 = como CMU.
+       Obstaculos a 10 cm (CMU 20 cm) para no "engordar" los bordes en pasos angostos.
+       Llega mas cerca de la meta: frena a 0.2 m (CMU 0.3). -->
+  <arg name="escala_min" default="0.45"/>
+  <!-- m sobre el piso desde donde algo es obstaculo. CMU: 0.3 -> el R1 acostado (~20 cm) era invisible
+       y el perro se le tiraba encima. Mas bajo = ve cosas mas bajas, pero el ruido del L1 molesta mas. -->
+  <arg name="altura_obstaculo" default="0.3"/>  <!-- como CMU: con 0.2 el ruido del L1 a 2 m armaba obstaculos falsos -->
+  <node pkg="local_planner" exec="localPlanner" name="localPlanner" output="screen">
+    <!-- el terreno sin los fantasmas que el perro ya atraveso (go2_metas) -->
+    <remap from="/terrain_map" to="/terrain_map_go2" />
+    <param name="pathFolder" value="$(find-pkg-share local_planner)/paths" />
+    <param name="vehicleLength" value="0.7" />
+    <param name="vehicleWidth" value="0.4" />
+    <param name="sensorOffsetX" value="$(var sensorOffsetX)" />
+    <param name="sensorOffsetY" value="$(var sensorOffsetY)" />
+    <param name="twoWayDrive" value="false" />
+    <param name="laserVoxelSize" value="0.05" />
+    <param name="terrainVoxelSize" value="0.1" />
+    <param name="useTerrainAnalysis" value="true" />
+    <param name="checkObstacle" value="true" />
+    <param name="checkRotObstacle" value="false" />
+    <param name="adjacentRange" value="3.0" />
+    <param name="obstacleHeightThre" value="$(var altura_obstaculo)" />
+    <param name="groundHeightThre" value="0.1" />
+    <param name="costHeightThre" value="0.1" />
+    <param name="costScore" value="0.02" />
+    <param name="useCost" value="false" />
+    <param name="pointPerPathThre" value="2" />
+    <param name="minRelZ" value="-0.5" />
+    <param name="maxRelZ" value="0.25" />
+    <param name="maxSpeed" value="$(var maxSpeed)" />
+    <param name="dirWeight" value="0.02" />
+    <param name="dirThre" value="90.0" />
+    <param name="dirToVehicle" value="false" />
+    <param name="pathScale" value="0.75" />
+    <param name="minPathScale" value="$(var escala_min)" />
+    <param name="pathScaleStep" value="0.1" />
+    <param name="pathScaleBySpeed" value="true" />
+    <param name="minPathRange" value="1.0" />
+    <param name="pathRangeStep" value="0.5" />
+    <param name="pathRangeBySpeed" value="true" />
+    <param name="pathCropByGoal" value="true" />
+    <param name="autonomyMode" value="false" />
+    <param name="autonomySpeed" value="$(var autonomySpeed)" />
+    <param name="joyToSpeedDelay" value="2.0" />
+    <param name="joyToCheckObstacleDelay" value="5.0" />
+    <param name="goalClearRange" value="0.5" />
+    <param name="goalX" value="0.0" />
+    <param name="goalY" value="0.0" />
+  </node>
+
+  <node pkg="local_planner" exec="pathFollower" name="pathFollower" output="screen">
+    <param name="sensorOffsetX" value="$(var sensorOffsetX)" />
+    <param name="sensorOffsetY" value="$(var sensorOffsetY)" />
+    <param name="pubSkipNum" value="1" />
+    <param name="twoWayDrive" value="false" />
+    <param name="lookAheadDis" value="0.5" />
+    <param name="yawRateGain" value="1.5" />
+    <param name="stopYawRateGain" value="1.5" />
+    <param name="maxYawRate" value="60.0" />        <!-- CMU 80 grados/s -->
+    <param name="maxSpeed" value="$(var maxSpeed)" />
+    <param name="maxAccel" value="2.0" />
+    <param name="switchTimeThre" value="1.0" />
+    <param name="dirDiffThre" value="0.4" />        <!-- como CMU: con 0.9 caminaba de lado (cangrejo) al girar -->
+    <param name="omniDirDiffThre" value="1.5" />
+    <param name="noRotSpeed" value="10.0"/>
+    <param name="stopDisThre" value="0.3" />         <!-- como CMU: para a 30 cm de la meta -->
+    <param name="slowDwnDisThre" value="0.4" />      <!-- CMU 0.75: frenaba tanto que bajaba de 0.2 m/s (el Go2
+                                                          marca el paso sin avanzar) y no llegaba -->
+    <param name="useInclRateToSlow" value="false" />
+    <param name="inclRateThre" value="120.0" />
+    <param name="slowRate1" value="0.25" />
+    <param name="slowRate2" value="0.5" />
+    <param name="slowTime1" value="2.0" />
+    <param name="slowTime2" value="2.0" />
+    <param name="useInclToStop" value="false" />
+    <param name="inclThre" value="45.0" />
+    <param name="stopTime" value="5.0" />
+    <param name="noRotAtStop" value="false" />
+    <param name="noRotAtGoal" value="true" />
+    <param name="autonomyMode" value="false" />
+    <param name="autonomySpeed" value="$(var autonomySpeed)" />
+    <param name="joyToSpeedDelay" value="2.0" />
+    <param name="goalCloseDis" value="0.4"/>
+    <param name="is_real_robot" value="false"/>
+  </node>
+
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher"
+        args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="sensorTransPublisher"
+        args="0 0 $(var cameraOffsetZ) -1.5707963 0 -1.5707963 /sensor /camera"/>
+
+  <!-- filtro de fantasmas del L1: un punto cerca del perro se queda solo si se repite en las ultimas
+       nubes (lo real se repite, el ruido no). El piso nunca se toca. Lo leen los dos analisis de terreno
+       (los que deciden que es obstaculo); Point-LIO, FAR y el mapa usan la nube cruda.
+       filtro:=false lo apaga (pasa todo). fantasmas_min_puntos: mas alto = filtra mas. -->
+  <arg name="filtro" default="true"/>
+  <arg name="fantasmas_min_puntos" default="5"/>
+  <node pkg="go2_v2" exec="fantasmas" name="go2_fantasmas" output="screen" respawn="true" respawn_delay="1.0">
+    <param name="activo" value="$(var filtro)" />
+    <param name="min_puntos" value="$(var fantasmas_min_puntos)" />
+  </node>
+
+  <!-- el mapa 3D que se arma mientras camina: /go2/mapa en RViz, 'go2v2 mapa' o G lo guarda (.pcd) -->
+  <node pkg="go2_v2" exec="mapa" name="go2_mapa" output="screen" respawn="true" respawn_delay="2.0"/>
+
+  <!-- analisis de terreno: lo mismo que terrain_analysis.launch de CMU, pero con el filtro "sin datos"
+       regulable. CMU marca como OBSTACULO (una pared de 1.5 m) cada cuadro de 20x20 cm entre 0.3 y
+       1.8 m delante del perro que tenga menos de 'terreno_min_puntos' puntos del lidar. Si el L1 manda
+       pocas nubes, aparecen paredes falsas delante: el planificador local se queda sin caminos libres,
+       se borran las lineas azules (free_paths) y el perro se frena. Por eso aca va en 5 (CMU: 10);
+       'terreno_min_puntos:=10' vuelve a lo de CMU. 'terreno_sin_datos:=false' lo apaga (OJO: ese filtro
+       es el que evita escalones/huecos). Lee /registered_scan_limpia (sin fantasmas, ver go2_fantasmas). -->
+  <arg name="terreno_sin_datos" default="true"/>
+  <arg name="terreno_min_puntos" default="1"/>     <!-- CMU: 10. 1 = pared solo donde NO hay ni un punto -->
+  <arg name="terreno_sin_datos_hasta" default="1.0"/>  <!-- m delante del lidar (CMU: 1.8) -->
+  <!-- POR QUE GIRABA: esa zona "sin datos" va PEGADA al perro (0.3-1.8 m delante de donde mira). Si el L1
+       junta pocos puntos ahi, aparece una pared delante; el perro gira para esquivarla, la pared gira
+       con el y vuelve a quedar delante: gira y gira. Ahora solo cuenta un cuadro SIN ningun punto y solo
+       hasta 1 m: lo de cerca el L1 lo ve bien, y un hueco/escalon de verdad (sin piso) sigue frenando,
+       igual que un piso mas de 0.6 m abajo del lidar (maxElevBelowVeh). -->
+  <node pkg="terrain_analysis" exec="terrainAnalysis" name="terrainAnalysis" output="screen">
+    <remap from="/registered_scan" to="/registered_scan_limpia" />
+    <param name="scanVoxelSize" value="0.05" />
+    <param name="decayTime" value="2.0" />
+    <param name="noDecayDis" value="0.0" />
+    <param name="clearingDis" value="8.0" />
+    <param name="useSorting" value="true" />
+    <param name="quantileZ" value="0.25" />
+    <param name="considerDrop" value="false" />
+    <param name="limitGroundLift" value="false" />
+    <param name="maxGroundLift" value="0.15" />
+    <param name="clearDyObs" value="false" />
+    <param name="minDyObsDis" value="0.3" />
+    <param name="minDyObsAngle" value="0.0" />
+    <param name="minDyObsRelZ" value="-0.3" />
+    <param name="absDyObsRelZThre" value="0.2" />
+    <param name="minDyObsVFOV" value="-16.0" />
+    <param name="maxDyObsVFOV" value="16.0" />
+    <param name="minDyObsPointNum" value="1" />
+    <param name="noDataObstacle" value="$(var terreno_sin_datos)" />
+    <param name="noDataBlockSkipNum" value="0" />
+    <param name="minBlockPointNum" value="$(var terreno_min_puntos)" />
+    <param name="maxElevBelowVeh" value="-0.6" />
+    <param name="noDataAreaMinX" value="0.3" />
+    <param name="noDataAreaMaxX" value="$(var terreno_sin_datos_hasta)" />
+    <param name="noDataAreaMinY" value="-0.9" />
+    <param name="noDataAreaMaxY" value="0.9" />
+    <param name="vehicleHeight" value="1.5" />
+    <param name="voxelPointUpdateThre" value="100" />
+    <param name="voxelTimeUpdateThre" value="2.0" />
+    <param name="minRelZ" value="-1.5" />
+    <param name="maxRelZ" value="0.5" />
+    <param name="disRatioZ" value="0.2" />
+  </node>
+
+  <group if="$(var ruta)">
+    <!-- terrain_analysis_ext.launch de CMU, igual, pero leyendo la nube sin fantasmas -->
+    <node pkg="terrain_analysis_ext" exec="terrainAnalysisExt" name="terrainAnalysisExt" output="screen">
+      <remap from="/registered_scan" to="/registered_scan_limpia" />
+      <param name="scanVoxelSize" value="0.1" />
+      <param name="decayTime" value="10.0" />
+      <param name="noDecayDis" value="0.0" />
+      <param name="clearingDis" value="30.0" />
+      <param name="useSorting" value="true" />
+      <param name="quantileZ" value="0.1" />
+      <param name="vehicleHeight" value="1.5" />
+      <param name="voxelPointUpdateThre" value="100" />
+      <param name="voxelTimeUpdateThre" value="2.0" />
+      <param name="lowerBoundZ" value="-2.5" />
+      <param name="upperBoundZ" value="1.0" />
+      <param name="disRatioZ" value="0.1" />
+      <param name="checkTerrainConn" value="$(var checkTerrainConn)" />
+      <param name="terrainConnThre" value="0.5" />
+      <param name="terrainUnderVehicle" value="-0.75" />
+      <param name="ceilingFilteringThre" value="2.0" />
+      <param name="localTerrainMapRadius" value="4.0" />
+    </node>
+    <!-- FAR planner (lo mismo que far_planner.launch de CMU, pero con RViz opcional) -->
+    <node pkg="far_planner" exec="far_planner" name="far_planner" output="screen" respawn="true" respawn_delay="2.0">
+      <param from="$(find-pkg-share far_planner)/config/default.yaml" />
+      <param name="use_sim_time" value="false" />
+      <param name="robot_dim" value="$(var ancho_ruta)" />   <!-- CMU 0.6: no pasaba por puertas -->
+      <remap from="/odom_world" to="/state_estimation" />
+      <!-- FAR ya no le habla directo al planificador local: pasa por go2_metas -->
+      <remap from="/goal_point" to="/far_goal" />
+      <remap from="/way_point" to="/far_way_point" />
+      <remap from="/terrain_cloud" to="/terrain_map_ext" />
+      <remap from="/scan_cloud" to="/terrain_map" />
+      <remap from="/terrain_local_cloud" to="/registered_scan" />
+    </node>
+    <include file="$(find-pkg-share graph_decoder)/launch/decoder.launch" />
+    <!-- RViz de FAR: botones Goalpoint, Reset Visibility Graph, etc. -->
+    <node launch-prefix="nice" pkg="rviz2" exec="rviz2" name="far_rviz" if="$(var rviz)"
+          args="-d $(find-pkg-share go2_v2)/rviz/go2_rutas.rviz" />
+  </group>
+
+  <group unless="$(var ruta)">
+    <node launch-prefix="nice" pkg="rviz2" exec="rviz2" name="rvizGA" if="$(var rviz)"
+          args="-d $(find-pkg-share go2_v2)/rviz/go2_local.rviz"/>
+  </group>
+
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="loamInterfaceTransPubMap" args="0 0 0 0 0 0 /map /camera_init"/>
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="loamInterfaceTransPubVehicle" args="0 0 0 0 0 0 /aft_mapped /sensor"/>
+
+  <!-- go2_metas: el planificador de rutas propio (A*) y el DUENO DEL MAPA: lo guarda/carga ('go2v2 mapa',
+       'lanzar mapa:=ultimo'), borra los fantasmas por donde paso el perro (pisadas) y le pasa el terreno
+       limpio al planificador local (/terrain_map_go2). Corre siempre (con o sin FAR). -->
+  <node pkg="go2_v2" exec="metas" name="go2_metas" output="screen" respawn="true" respawn_delay="1.0">
+    <param name="directo_max" value="$(var directo_max)" />
+    <param name="altura_obstaculo" value="$(var altura_obstaculo)" />
+    <param name="planificador" value="$(var planificador)" />
+    <param name="sensorOffsetX" value="$(var sensorOffsetX)" />
+    <param name="cargar_mapa" value="$(var mapa)" />
+  </node>
+
+  <!-- el UNICO que le habla al perro -->
+  <node pkg="go2_v2" exec="guardian" name="go2_guardian" output="screen" respawn="true" respawn_delay="1.0">
+    <remap from="/terrain_map" to="/terrain_map_go2" />   <!-- si go2_metas se cae, el guardian frena -->
+    <param from="$(find-pkg-share go2_v2)/config/guardian.yaml" />
+  </node>
+
+
+  <!-- el modelo 3D del Go2 en RViz: urdf + angulos reales de las patas, pegado al marco 'vehicle'
+       de CMU (centro del cuerpo; base_link esta 1 cm mas adelante: el L1 va a 0.289 m y CMU usa 0.3) -->
+  <node pkg="robot_state_publisher" exec="robot_state_publisher" name="go2_robot_state" output="log">
+    <param name="robot_description" value="$(command 'cat $(find-pkg-share go2_v2)/urdf/go2.urdf')" />
+  </node>
+  <node pkg="go2_v2" exec="modelo" name="go2_modelo" output="log" />
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="go2_vehicle_a_base"
+        args="0.01055 0 0 0 0 0 /vehicle /base_link"/>
+
+</launch>

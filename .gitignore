@@ -1,0 +1,7 @@
+# grabaciones de 'go2v2 diagnostico' (cientos de MB; GitHub no acepta archivos de mas de 100 MB)
+diagnostico/nav_*/
+*.db3
+# lo que genera Python / respaldos (algunos son de root y git no los puede leer)
+__pycache__/
+*.pyc
+*.bak

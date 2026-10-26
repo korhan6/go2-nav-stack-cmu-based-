@@ -1,0 +1,300 @@
+=====================================================================
+ GO2 v2 (stack de CMU) - COMO ARRANCAR CADA MODULO
+ Repo: korhan6/go2, rama claude/v2-cmu   |   En tu PC: ~/go2v2
+=====================================================================
+
+INDICE
+  0. Que es cada modulo (el mapa)
+  1. Preparacion (una sola vez)
+  2. Forma facil: todo junto con un comando
+  3. Forma manual: modulo por modulo, cada uno en su terminal
+  4. Como comprobar que cada modulo funciona
+  5. Usarlo: metas, puntos guardados, control PS4
+  6. Simulador
+  7. Problemas comunes
+  8. Apagar
+
+
+---------------------------------------------------------------------
+0. QUE ES CADA MODULO
+---------------------------------------------------------------------
+
+El dato viaja asi (de arriba hacia abajo):
+
+  Perro (L1 lidar + IMU)  -> /utlidar/cloud, /utlidar/imu
+        |
+  [A] go2_sensores       pasa la nube y la IMU al marco del cuerpo
+        |                -> /utlidar/transformed_cloud, /utlidar/transformed_imu
+  [B] Point-LIO (SLAM)   donde estoy + mapa
+        |                -> /state_estimation (pose), /registered_scan (nube en el mapa)
+  [C] terrain_analysis   que se puede pisar cerca del perro
+        |                -> /terrain_map
+  [D] local_planner      elige trayectorias sin chocar, ~100 Hz
+      + pathFollower     -> /path, /cmd_vel
+        |
+  [E] go2_guardian       EL UNICO que le habla al perro (/api/sport/request).
+                         Frena solo si algo falla.
+
+  Opcionales:
+  [F] terrain_analysis_ext + FAR planner + graph_decoder
+                         rutas largas en lugares que no conoce (si el camino
+                         directo esta bloqueado, busca otro)
+  [G] joy_node           control PS4
+  [H] robot_state_publisher + go2_modelo   el modelo 3D del perro en RViz
+  [I] RViz               visualizacion y clic para mandar metas
+  [J] TF estaticos       map->camera_init, aft_mapped->sensor
+
+
+---------------------------------------------------------------------
+1. PREPARACION (UNA SOLA VEZ)
+---------------------------------------------------------------------
+
+1.1 Cable y red
+    - Cable Ethernet del perro a la laptop.
+    - Tu IP fija en esa interfaz: 192.168.123.100 / 255.255.255.0
+    - Probar:  ping 192.168.123.161
+
+1.2 Construir la imagen Docker (15-25 min la primera vez)
+    cd ~/go2v2
+    go2v2 instalar
+
+1.3 Buffer de red (pide sudo; queda guardado)
+    go2v2 red
+
+1.4 Calibrar la IMU del L1 (una vez por perro)
+    - Perro DE PIE, con ~1 m libre alrededor.
+    - Da pasitos 2 s, queda quieto 10 s y GIRA 20 s. No lo toques.
+    go2v2 calibrar
+    -> queda en ~/.go2_v2/Desktop/imu_calib_data.yaml
+
+1.5 Control PS4: emparejalo por Bluetooth o conectalo por USB ANTES de
+    lanzar (tiene que existir /dev/input/js0).
+
+
+---------------------------------------------------------------------
+2. FORMA FACIL: TODO JUNTO
+---------------------------------------------------------------------
+
+    go2v2 lanzar                      todo: SLAM + esquive + rutas + RViz
+    go2v2 lanzar velocidad:=0.5       RECOMENDADO para las primeras pruebas
+    go2v2 lanzar ruta:=false          sin FAR (solo planificador local: metas cercanas)
+    go2v2 lanzar rviz:=false          sin ventana de RViz
+
+Se puede combinar:  go2v2 lanzar velocidad:=0.5 ruta:=false
+
+Ctrl+C en esa terminal, o "go2v2 detener" desde otra, apaga todo.
+
+
+---------------------------------------------------------------------
+3. FORMA MANUAL: MODULO POR MODULO
+---------------------------------------------------------------------
+
+Sirve para probar o depurar una pieza sola. Cada modulo va en su PROPIA
+terminal. En cada terminal nueva primero:
+
+    go2v2 shell
+
+Eso abre una terminal dentro del Docker con ROS 2, CMU y CycloneDDS ya
+configurados por el cable del perro. Todas las terminales se ven entre si
+(usan la red del host).
+
+IMPORTANTE:
+  - NO mezcles con "go2v2 lanzar": o todo junto o todo manual.
+  - Arranca en este orden. El guardian [E] va al final: es el que mueve al
+    perro.
+  - Para cortar un modulo: Ctrl+C en su terminal.
+
+Para no repetir rutas largas, en cada terminal podes definir:
+    S=/ws/install
+
+--- [J] TF estaticos (terminal 1) ---------------------------------
+    ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 map camera_init &
+    ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 aft_mapped sensor
+
+--- [G] Control PS4 (terminal 2, opcional) ------------------------
+    ros2 run joy joy_node --ros-args -p dev:=/dev/input/js0 -p deadzone:=0.12 -p autorepeat_rate:=0.0
+
+--- [A] Sensores (terminal 3) -------------------------------------
+    ros2 run go2_v2 sensores
+
+--- [B] SLAM Point-LIO (terminal 4) -------------------------------
+    S=/ws/install
+    ros2 run point_lio_unilidar pointlio_mapping --ros-args \
+      --params-file $S/point_lio_unilidar/share/point_lio_unilidar/config/utlidar.yaml \
+      -p use_imu_as_input:=false -p prop_at_freq_of_imu:=true -p check_satu:=true \
+      -p init_map_size:=10 -p point_filter_num:=1 -p space_down_sample:=true \
+      -p filter_size_surf:=0.1 -p filter_size_map:=0.1 -p cube_side_length:=1000.0 \
+      -p runtime_pos_log_enable:=false \
+      -r /cloud_registered:=/registered_scan -r /aft_mapped_to_init:=/state_estimation
+
+    Dejar el perro QUIETO los primeros segundos mientras arranca.
+
+--- [C] Analisis de terreno (terminal 5) --------------------------
+    ros2 launch terrain_analysis terrain_analysis.launch
+
+--- [D] Planificador local + seguidor (terminal 6) ----------------
+    ros2 launch local_planner local_planner.launch is_real_robot:=false \
+      maxSpeed:=0.5 autonomySpeed:=0.5 sensorOffsetX:=0.3 sensorOffsetY:=0.0 cameraOffsetZ:=0.0
+
+    is_real_robot:=false es OBLIGATORIO: asi publica /cmd_vel y el guardian
+    es quien habla con el perro.
+
+--- [F] Rutas largas: FAR planner (terminales 7, 8, 9; opcional) --
+  Terminal 7:
+    ros2 launch terrain_analysis_ext terrain_analysis_ext.launch checkTerrainConn:=true
+  Terminal 8:
+    S=/ws/install
+    ros2 run far_planner far_planner --ros-args \
+      --params-file $S/far_planner/share/far_planner/config/default.yaml \
+      -p use_sim_time:=false \
+      -r /odom_world:=/state_estimation -r /terrain_cloud:=/terrain_map_ext \
+      -r /scan_cloud:=/terrain_map -r /terrain_local_cloud:=/registered_scan
+  Terminal 9:
+    ros2 launch graph_decoder decoder.launch
+
+--- [H] Modelo 3D del perro en RViz (terminal 10, opcional) -------
+    S=/ws/install
+    ros2 run robot_state_publisher robot_state_publisher --ros-args \
+      -p robot_description:="$(cat $S/go2_v2/share/go2_v2/urdf/go2.urdf)" &
+    ros2 run tf2_ros static_transform_publisher 0.01055 0 0 0 0 0 vehicle base_link &
+    ros2 run go2_v2 modelo
+
+--- [I] RViz (terminal 11) ----------------------------------------
+    S=/ws/install
+    Con FAR:   rviz2 -d $S/go2_v2/share/go2_v2/rviz/go2_rutas.rviz
+    Sin FAR:   rviz2 -d $S/go2_v2/share/go2_v2/rviz/go2_local.rviz
+
+--- [E] Guardian: el que mueve al perro (terminal 12, AL FINAL) ---
+    S=/ws/install
+    ros2 run go2_v2 guardian --ros-args \
+      --params-file $S/go2_v2/share/go2_v2/config/guardian.yaml
+
+    Sin el guardian, el perro NO se mueve aunque el planificador publique
+    /cmd_vel. Sirve para probar todo "en seco": arrancar [A]-[D], mirar
+    RViz, y recien despues arrancar [E].
+
+
+---------------------------------------------------------------------
+4. COMO COMPROBAR QUE CADA MODULO FUNCIONA
+---------------------------------------------------------------------
+
+Desde otra terminal "go2v2 shell":
+
+  Perro conectado     ros2 topic hz /utlidar/cloud                ~10-15 Hz
+                      ros2 topic hz /utlidar/imu                  ~250 Hz
+  [A] sensores        ros2 topic hz /utlidar/transformed_cloud    igual que la nube
+                      ros2 topic echo /go2/sensores_estado --once
+  [B] SLAM            ros2 topic hz /state_estimation
+                      ros2 topic hz /registered_scan
+  [C] terreno         ros2 topic hz /terrain_map
+  [D] planificador    ros2 topic echo /cmd_vel   (se mueve al dar una meta)
+  [E] guardian        ros2 topic echo /go2/guardian_estado --once
+  [F] FAR             ros2 topic hz /terrain_map_ext
+
+Resumen rapido de todo (con "go2v2 lanzar"):
+    go2v2 estado      sensores, guardian, pose y demora de la red
+    go2v2 log         ultimos mensajes
+
+Si un topico no publica, el problema esta en ese modulo o en el anterior
+de la cadena de la seccion 0.
+
+
+---------------------------------------------------------------------
+5. USARLO
+---------------------------------------------------------------------
+
+Con "go2v2 lanzar" corriendo, desde otra terminal:
+    go2v2 ir 3 0              3 m adelante de donde arranco (x adelante, y izquierda)
+    go2v2 guardar cocina      guarda donde esta el perro
+    go2v2 ir cocina
+    go2v2 puntos              lista los puntos guardados
+    go2v2 borrar cocina
+    go2v2 parar               corta la navegacion (queda quieto)
+    go2v2 pausa               freno de emergencia (otra vez para seguir)
+    go2v2 acostar | levantar | bloquear | desbloquear
+    go2v2 recuperar           si se cayo: RecoveryStand
+
+En modo manual (seccion 3), los mismos comandos van dentro de un
+"go2v2 shell":
+    ros2 run go2_v2 herramientas ir 3 0
+    ros2 service call /go2/pausa std_srvs/srv/Trigger "{}"
+
+En RViz: boton "Waypoint" (o "Goalpoint" con FAR) y clic en el mapa.
+
+Los puntos son RELATIVOS a donde arranco el perro. El mapa no se guarda
+entre sesiones: si lo lanzas desde otro lugar, los puntos se corren.
+
+Control PS4:
+    stick derecho        manejar (el perro esquiva solo)
+    L2 sostenido         modo autonomo (sigue la meta)
+    R2 sostenido         manual SIN esquive
+    R1                   borrar el mapa de terreno (si quedo basura)
+    L1                   borrar el grafo de rutas de FAR
+    CIRCULO              pausa / freno de emergencia
+    SHARE + CRUZ         acostar
+    SHARE + TRIANGULO    levantar
+    SHARE + CUADRADO     bloquear / desbloquear
+    SHARE + CIRCULO      recuperar
+
+
+---------------------------------------------------------------------
+6. SIMULADOR (SIN PERRO)
+---------------------------------------------------------------------
+
+    go2v2 sim-instalar ~/Downloads/unity_env_home_building_1.zip    (una vez)
+    go2v2 sim
+    go2v2 sim velocidad:=0.8 ruta:=false
+
+Corre aislado en el dominio DDS 42: nada le llega a un perro real.
+ir / guardar / parar / pausa / estado funcionan igual que con el perro.
+
+
+---------------------------------------------------------------------
+7. PROBLEMAS COMUNES
+---------------------------------------------------------------------
+
+"ninguna interfaz con IP 192.168.123.x"
+    El cable no esta o falta tu IP fija (seccion 1.1).
+
+"buffer de red chico"
+    Correr "go2v2 red" una vez.
+
+"SIN calibracion de la IMU"
+    Funciona, pero el mapa se tuerce. Correr "go2v2 calibrar".
+
+El perro no se mueve
+    - ¿Esta el guardian corriendo? (go2v2 estado)
+    - ¿Esta en pausa o bloqueado? (CIRCULO o "go2v2 pausa" otra vez /
+      "go2v2 desbloquear")
+    - ¿Demora alta? Si la odometria llega con mas de 0.6 s o el terreno con
+      mas de 1.5 s, el guardian lo frena a proposito.
+
+El perro frena solo a cada rato
+    Mirar "go2v2 estado" (demora) y "go2v2 log". Revisar el cable y el
+    buffer de red.
+
+El mapa se tuerce o "salta"
+    Recalibrar la IMU. Al lanzar, dejar el perro quieto unos segundos.
+
+Basura en el mapa de terreno (obstaculos fantasma)
+    R1 en el PS4.
+
+No pasa por un lugar angosto
+    El planificador usa el ancho del perro + margen. Huecos de menos de
+    ~50-60 cm probablemente no los toma.
+
+Cambie codigo Python de go2_v2 (sensores.py, guardian.py...)
+    No hace falta "go2v2 instalar": la carpeta va montada en vivo. Solo
+    detener y volver a lanzar.
+    Si cambias el Dockerfile o algo de CMU: si, "go2v2 instalar".
+
+
+---------------------------------------------------------------------
+8. APAGAR
+---------------------------------------------------------------------
+
+    go2v2 detener           (o Ctrl+C en la terminal de "go2v2 lanzar")
+
+Al cerrarse, el guardian le manda StopMove al perro.
+En modo manual: Ctrl+C en cada terminal, el guardian primero.
+=====================================================================

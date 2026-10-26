@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<!-- Unitree Go2 para RViz (mallas de unitreerobotics/unitree_ros, BSD-3). SIN "dos puntos y espacio" en este archivo -- el launch XML de Humble lo lee como YAML y se rompe -->
+<robot name="go2">
+  <material name="cuerpo"><color rgba="0.78 0.79 0.82 1"/></material>
+  <material name="pata"><color rgba="0.62 0.64 0.68 1"/></material>
+  <material name="pie"><color rgba="0.12 0.12 0.12 1"/></material>
+  <link name="base_link"/>
+  <joint name="base_link_a_base" type="fixed"><parent link="base_link"/><child link="base"/><origin xyz="0 0 0" rpy="0 0 0"/></joint>
+  <link name="base"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/base.stl"/></geometry><material name="cuerpo"/></visual></link>
+  <link name="FL_hip"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/hip.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="FL_hip_joint" type="revolute"><parent link="base"/><child link="FL_hip"/><origin xyz="0.1934 0.0465 0" rpy="0 0 0"/><axis xyz="1 0 0"/><limit lower="-1.0472" upper="1.0472" effort="23.7" velocity="30.1"/></joint>
+  <link name="FL_thigh"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/thigh.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="FL_thigh_joint" type="revolute"><parent link="FL_hip"/><child link="FL_thigh"/><origin xyz="0 0.0955 0" rpy="0 0 0"/><axis xyz="0 1 0"/><limit lower="-1.5708" upper="3.4907" effort="23.7" velocity="30.1"/></joint>
+  <link name="FL_calf"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/calf.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="FL_calf_joint" type="revolute"><parent link="FL_thigh"/><child link="FL_calf"/><origin xyz="0 0 -0.213" rpy="0 0 0"/><axis xyz="0 1 0"/><limit lower="-2.7227" upper="-0.83776" effort="45.43" velocity="15.70"/></joint>
+  <link name="FL_foot"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/foot.stl"/></geometry><material name="pie"/></visual></link>
+  <joint name="FL_foot_joint" type="fixed"><parent link="FL_calf"/><child link="FL_foot"/><origin xyz="0 0 -0.213" rpy="0 0 0"/></joint>
+  <link name="FR_hip"><visual><origin xyz="0 0 0" rpy="3.1415 0 0"/><geometry><mesh filename="package://go2_v2/meshes/hip.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="FR_hip_joint" type="revolute"><parent link="base"/><child link="FR_hip"/><origin xyz="0.1934 -0.0465 0" rpy="0 0 0"/><axis xyz="1 0 0"/><limit lower="-1.0472" upper="1.0472" effort="23.7" velocity="30.1"/></joint>
+  <link name="FR_thigh"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/thigh_mirror.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="FR_thigh_joint" type="revolute"><parent link="FR_hip"/><child link="FR_thigh"/><origin xyz="0 -0.0955 0" rpy="0 0 0"/><axis xyz="0 1 0"/><limit lower="-1.5708" upper="3.4907" effort="23.7" velocity="30.1"/></joint>
+  <link name="FR_calf"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/calf_mirror.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="FR_calf_joint" type="revolute"><parent link="FR_thigh"/><child link="FR_calf"/><origin xyz="0 0 -0.213" rpy="0 0 0"/><axis xyz="0 1 0"/><limit lower="-2.7227" upper="-0.83776" effort="45.43" velocity="15.70"/></joint>
+  <link name="FR_foot"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/foot.stl"/></geometry><material name="pie"/></visual></link>
+  <joint name="FR_foot_joint" type="fixed"><parent link="FR_calf"/><child link="FR_foot"/><origin xyz="0 0 -0.213" rpy="0 0 0"/></joint>
+  <link name="RL_hip"><visual><origin xyz="0 0 0" rpy="0 3.1415 0"/><geometry><mesh filename="package://go2_v2/meshes/hip.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="RL_hip_joint" type="revolute"><parent link="base"/><child link="RL_hip"/><origin xyz="-0.1934 0.0465 0" rpy="0 0 0"/><axis xyz="1 0 0"/><limit lower="-1.0472" upper="1.0472" effort="23.7" velocity="30.1"/></joint>
+  <link name="RL_thigh"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/thigh.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="RL_thigh_joint" type="revolute"><parent link="RL_hip"/><child link="RL_thigh"/><origin xyz="0 0.0955 0" rpy="0 0 0"/><axis xyz="0 1 0"/><limit lower="-0.5236" upper="4.5379" effort="23.7" velocity="30.1"/></joint>
+  <link name="RL_calf"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/calf.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="RL_calf_joint" type="revolute"><parent link="RL_thigh"/><child link="RL_calf"/><origin xyz="0 0 -0.213" rpy="0 0 0"/><axis xyz="0 1 0"/><limit lower="-2.7227" upper="-0.83776" effort="45.43" velocity="15.70"/></joint>
+  <link name="RL_foot"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/foot.stl"/></geometry><material name="pie"/></visual></link>
+  <joint name="RL_foot_joint" type="fixed"><parent link="RL_calf"/><child link="RL_foot"/><origin xyz="0 0 -0.213" rpy="0 0 0"/></joint>
+  <link name="RR_hip"><visual><origin xyz="0 0 0" rpy="3.1415 3.1415 0"/><geometry><mesh filename="package://go2_v2/meshes/hip.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="RR_hip_joint" type="revolute"><parent link="base"/><child link="RR_hip"/><origin xyz="-0.1934 -0.0465 0" rpy="0 0 0"/><axis xyz="1 0 0"/><limit lower="-1.0472" upper="1.0472" effort="23.7" velocity="30.1"/></joint>
+  <link name="RR_thigh"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/thigh_mirror.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="RR_thigh_joint" type="revolute"><parent link="RR_hip"/><child link="RR_thigh"/><origin xyz="0 -0.0955 0" rpy="0 0 0"/><axis xyz="0 1 0"/><limit lower="-0.5236" upper="4.5379" effort="23.7" velocity="30.1"/></joint>
+  <link name="RR_calf"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/calf_mirror.stl"/></geometry><material name="pata"/></visual></link>
+  <joint name="RR_calf_joint" type="revolute"><parent link="RR_thigh"/><child link="RR_calf"/><origin xyz="0 0 -0.213" rpy="0 0 0"/><axis xyz="0 1 0"/><limit lower="-2.7227" upper="-0.83776" effort="45.43" velocity="15.70"/></joint>
+  <link name="RR_foot"><visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://go2_v2/meshes/foot.stl"/></geometry><material name="pie"/></visual></link>
+  <joint name="RR_foot_joint" type="fixed"><parent link="RR_calf"/><child link="RR_foot"/><origin xyz="0 0 -0.213" rpy="0 0 0"/></joint>
+</robot>

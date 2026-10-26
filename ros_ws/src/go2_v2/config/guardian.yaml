@@ -1,0 +1,18 @@
+# go2_guardian: el unico que le habla al perro. Limites DUROS (el planificador de CMU ya va por
+# debajo: maxSpeed en 'go2v2 lanzar velocidad:=...')
+go2_guardian:
+  ros__parameters:
+    vx_max: 1.0                 # m/s adelante/atras
+    vy_max: 0.6                 # m/s de lado (el perro esquiva en diagonal)
+    wz_max: 1.5                 # rad/s de giro
+    vigencia: 0.25              # s: si el planificador no manda nada en este tiempo -> StopMove
+    freewalk: true              # al levantarse/desbloquear: marcha FreeWalk (firmware >= 1.1.7)
+    v_min_caminar: 0.0          # 0 = no tocar. (con 0.2 se pasaba de la meta y volvia: ahora frena antes, ver slowDwnDisThre)
+    apagar_evitacion_unitree: true
+    lidar_max_edad: 0.5         # s sin nube del lidar (/registered_scan) -> quieto. 0 = no revisar
+    giro_max_s: 6.0             # s girando en el sitio sin avanzar -> quieto (paredes falsas). 0 = no revisar
+    salto_vel: 2.5              # m/s: la pose se mueve mas rapido que esto = el SLAM salto -> quieto hasta relanzar
+    salto_giro: 4.0             # rad/s: idem para el rumbo
+    vueltas_rad: 4.0            # rad girados en vueltas_s s sin alejarse 0.5 m = da vueltas -> quieto. 0 = no revisar
+    vueltas_s: 8.0
+    coherencia_m: 0.05          # girando en el sitio el lidar debe quedar >0.05 m delante del centro (sano ~0.2). 0 = no revisar

@@ -1,0 +1,10 @@
+# no mandar al build lo que generan Python o las pruebas (los crea el Docker como root)
+**/__pycache__
+**/*.pyc
+pruebas
+
+# respaldos (pueden ser de root y cortan el build)
+**/*.bak
+
+# grabaciones de diagnostico (grandes, no van a la imagen)
+diagnostico

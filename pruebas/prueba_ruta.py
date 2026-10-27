@@ -44,11 +44,12 @@ def main():
     # ...pero lo_mas_cerca lo lleva hasta la puerta (lo mas cerca de la meta que se puede)
     c2 = g2.planificar((-1.0, 0.0), (-1.0, 3.5), lo_mas_cerca=True)
     assert c2 is not None and 1.4 < c2[-1][1] < 2.0 and math.hypot(c2[-1][0] + 1.0, c2[-1][1] - 3.5) < 2.2, c2[-1]
-    # escalera para abajo (piso 0.6 m mas abajo) = hueco: la rodea
+    # piso mas bajo (0.6 m): ya NO es obstaculo (26/10: los 'huecos' marcaban negro medio cuarto)
     g3 = Grilla(res=0.1, lado=30.0)
     g3.actualizar(np.vstack([piso(-2, 4, -2, 4), piso(0.5, 1.5, -2, 2.5, z=-0.6)]), 0.0)
     c3 = g3.planificar((0.0, 0.0), (2.5, 0.0))
-    assert c3 is not None and not any(0.6 < p[0] < 1.4 and p[1] < 2.4 for p in c3), c3
+    assert c3 is not None and largo(c3) < 3.0, c3
+    assert (g3.c != OBSTACULO).all()
     # lo que se movio se limpia: una persona que se fue
     g4 = Grilla(res=0.1, lado=30.0)
     g4.actualizar(np.vstack([piso(-1, 3, -1, 1), pared(1.0, -0.5, 1.0, 0.5)]), 0.0)
@@ -65,10 +66,10 @@ def main():
     fantasma = np.c_[np.full(20, 1.0), np.linspace(-0.1, 0.1, 20), np.full(20, 0.3), np.full(20, 0.4)]
     g6.actualizar(np.vstack([piso(-1, 3, -1, 1), fantasma]), 0.0)
     assert g6.c[g6.celda(1.0, 0.0)] == OBSTACULO
-    for k in range(30):                              # camina de x=0 a x=2 por y=0
-        g6.pisar(k * 0.07, 0.0, 0.0)
-    assert g6.c[g6.celda(1.0, 0.0)] == LIBRE
     nube = np.vstack([piso(-1, 3, -1, 1), fantasma])
+    for k in range(30):                              # camina de x=0 a x=2 por y=0, con el mapa de ahora
+        g6.pisar(k * 0.07, 0.0, 0.0, nube=nube)
+    assert g6.c[g6.celda(1.0, 0.0)] == LIBRE
     ok = g6.filtrar_pisadas(nube)
     assert not ok[-20:].any() and ok[:-20].all()     # el fantasma se saca, el piso queda
     g6.actualizar(nube[ok], 0.0)
@@ -84,15 +85,31 @@ def main():
         g6.guardar(f)
         g7 = Grilla(res=0.1, lado=30.0)
         g7.cargar(f)
-        assert (g7.c == g6.c).all() and (g7.pisadas == g6.pisadas).all()
+        assert (g7.c == g6.c).all() and (g7.pisadas == g6.pisadas).all() and (g7.fantasmas == g6.fantasmas).all()
         try:
             Grilla(res=0.1, lado=20.0).cargar(f)
             raise AssertionError("tenia que fallar")
         except ValueError:
             pass
+    # una PERSONA que se para DESPUES en un lugar por donde el perro ya camino (x=1.5, y=0): se ve
+    # (26/10: antes sus piernas se borraban y el perro se le iba encima)
+    persona = np.c_[np.full(15, 1.5), np.linspace(-0.08, 0.08, 15), np.linspace(0.1, 0.6, 15), np.linspace(0.15, 0.65, 15)]
+    assert g6.pisadas[g6.celda(1.5, 0.0)] and not g6.fantasmas[g6.celda(1.5, 0.0)]
+    assert g6.filtrar_pisadas(persona).all()
+    g6.actualizar(np.vstack([piso(-1, 3, -1, 1), persona]), 0.0)
+    assert g6.c[g6.celda(1.5, 0.0)] == OBSTACULO
+    # sin nube al pisar (no se sabe que habia): no se confirma nada
+    g8 = Grilla(res=0.1, lado=30.0)
+    g8.pisar(1.0, 0.0, 0.0)
+    assert g8.pisadas.any() and not g8.fantasmas.any()
+    # lo que esta pegado al COSTADO del cuerpo (no debajo) no es fantasma
+    g9 = Grilla(res=0.1, lado=30.0)
+    al_lado = np.array([[1.0, 0.17, 0.2, 0.3]])
+    g9.pisar(1.0, 0.0, 0.0, nube=al_lado)
+    assert not g9.fantasmas.any()
     g6.olvidar_pisadas()
     assert g6.filtrar_pisadas(nube).all()
-    print("ruta: cruza por el centro de la puerta (%.1f m, %.0f ms), no pasa si no cabe, rodea la escalera" % (largo(c), ms))
+    print("ruta: cruza por el centro de la puerta (%.1f m, %.0f ms), no pasa si no cabe" % (largo(c), ms))
     print("OK ruta")
 
 

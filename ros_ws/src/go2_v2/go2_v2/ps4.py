@@ -2,11 +2,12 @@
 
   joy_node (/joy_ps4) -> /joy (lo que leen CMU y el guardian)
 
-  SIN EVASION (por defecto): stick IZQUIERDO adelante/atras y girar, stick DERECHO de lado.
-     Va directo al perro (modo manual de CMU, como R2 sostenido): no esquiva nada, manejas tu.
-  CON EVASION (OPTIONS cambia): como CMU, stick derecho y el planificador esquiva solo.
-  L2 sostenido: sigue la meta (autonomo), en los dos modos. El resto de botones pasa igual
-  (CIRCULO pausa, SHARE+... posturas, R1 borra el mapa de terreno, L1 el grafo de FAR).
+  Stick IZQUIERDO: adelante / atras / derecha / izquierda (de lado). Stick DERECHO: girar.
+  SIN EVASION (por defecto): va directo al perro (modo manual de CMU, como R2 sostenido): no esquiva
+     nada, manejas tu.
+  CON EVASION (OPTIONS cambia): los mismos sticks, y el planificador de CMU esquiva solo.
+  L2 sostenido: sigue la meta (autonomo), en los dos modos. Botones (los atiende go2_guardian):
+  CRUZ acostar, TRIANGULO levantar, CIRCULO pausa, R1 borra el mapa de terreno, L1 el grafo de FAR.
 """
 import sys
 
@@ -18,18 +19,21 @@ BOTON_OPTIONS = 9
 
 def mapear(ejes, sin_evasion):
     """Ejes del PS4 (joy_node: 0 izq X, 1 izq Y, 2 L2, 3 der X, 4 der Y, 5 R2) -> los que entiende CMU
-    (0 giro manual, 2 L2 autonomo, 3 lateral, 4 adelante, 5 R2 manual)."""
+    (0 giro, 2 L2 autonomo, 3 lateral, 4 adelante, 5 R2 manual). Stick izquierdo = moverse (adelante,
+    atras, de lado), stick derecho (X) = girar."""
     a = list(ejes) + [0.0] * max(0, 8 - len(ejes))
-    if not sin_evasion or a[2] < -0.1:              # con evasion, o L2 (sigue la meta): tal cual
+    if a[2] < -0.1:                                  # L2 (sigue la meta): tal cual
         return a
     izq_x, izq_y, der_x = a[0], a[1], a[3]
-    mueve = max(abs(izq_x), abs(izq_y), abs(der_x)) > ZONA
-    out = [0.0] * len(a)
-    out[0] = izq_x                                   # girar
-    out[2] = SUELTO
-    out[3] = der_x                                   # de lado
-    out[4] = izq_y                                   # adelante / atras
-    out[5] = APRETADO if mueve else SUELTO           # manual de CMU (sin evasion) mientras mueve
+    out = list(a)
+    out[0] = der_x                                   # girar (stick derecho)
+    out[1] = 0.0
+    out[3] = izq_x                                   # de lado (stick izquierdo)
+    out[4] = izq_y                                   # adelante / atras (stick izquierdo)
+    if sin_evasion:
+        mueve = max(abs(izq_x), abs(izq_y), abs(der_x)) > ZONA
+        out[2] = SUELTO
+        out[5] = APRETADO if mueve else SUELTO       # manual de CMU (sin evasion) mientras mueve
     return out
 
 
@@ -59,7 +63,8 @@ def main():
             self.modo = Modo(bool(self.declare_parameter("sin_evasion", True).value))
             self.pub = self.create_publisher(Joy, "/joy", 10)
             self.create_subscription(Joy, "/joy_ps4", self.cb, 10)
-            self.get_logger().info("PS4: %s (OPTIONS cambia). Stick izq: adelante/girar, der: de lado"
+            self.get_logger().info("PS4: %s (OPTIONS cambia). Stick izq: moverse (adelante/atras/de lado), "
+                                   "der: girar. CRUZ acostar, TRIANGULO levantar, CIRCULO pausa"
                                    % ("SIN evasion" if self.modo.sin_evasion else "CON evasion"))
 
         def cb(self, m):

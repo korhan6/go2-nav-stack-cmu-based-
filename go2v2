@@ -31,6 +31,8 @@ go2v2 - el Go2 con el stack de CMU (Point-LIO + planificador local a 100 Hz + FA
         escala_min:=0.5         hitbox como CMU (0.45 por defecto: pasa por huecos de ~0.5 m)
         directo_max:=0          todas las metas con FAR, como CMU (3 m por defecto: cerca va directo)
     go2v2 manejar               manejar con el teclado (WASD) mientras se arma el mapa
+    go2v2 calibrar-fantasmas [giro]  el perro se para, da una vuelta y calibra el filtro de fantasmas del
+                                lidar (queda guardado; o: lanzar calibrar_fantasmas:=true)
     go2v2 mapa                  guardar el mapa (rutas + nube 3D) en ~/.go2_v2/mapas
         lanzar mapa:=ultimo     arrancar con el ultimo mapa guardado (perro en el MISMO lugar y mirando igual)
     go2v2 olvidar-pisadas       volver a creerle al lidar donde el perro ya camino
@@ -58,13 +60,14 @@ go2v2 - el Go2 con el stack de CMU (Point-LIO + planificador local a 100 Hz + FA
     go2v2 shell                 una terminal dentro del Docker
 
   CONTROL PS4 (por Bluetooth o USB)  -- por defecto SIN evasion: manejas tu (OPTIONS cambia)
-    stick izquierdo             adelante/atras y girar            stick derecho: de lado
-    OPTIONS                     cambia a CON evasion (stick derecho, el perro esquiva solo) y vuelve
+    stick izquierdo             moverse: adelante / atras / derecha / izquierda (de lado)
+    stick derecho               girar
+    OPTIONS                     cambia a CON evasion (mismos sticks, el perro esquiva solo) y vuelve
     L2 sostenido                modo autonomo (sigue la meta)
+    CRUZ  acostar               TRIANGULO  levantar
+    CIRCULO                     pausa / freno de emergencia (otra vez para seguir)
     R1                          borrar el mapa de terreno (si quedo basura)
     L1                          borrar el grafo de rutas de FAR (empieza de cero)
-    CIRCULO                     pausa / freno de emergencia (otra vez para seguir)
-    SHARE + CRUZ  acostar       SHARE + TRIANGULO  levantar
     SHARE + CUADRADO  bloquear/desbloquear      SHARE + CIRCULO  recuperar (RecoveryStand)
 TXT
 }
@@ -259,6 +262,14 @@ case "$cmd" in
   manejar)
     if ! corriendo; then rojo "la v2 no esta corriendo: primero 'go2v2 lanzar' (en otra terminal)"; exit 1; fi
     docker exec -it -e GO2V2_SILENCIO=1 "$NOMBRE" /entrypoint.sh ros2 run go2_v2 teclado
+    ;;
+  calibrar-fantasmas)
+    # el perro se para, da UNA vuelta despacio y calibra el filtro de fantasmas (queda en ~/.go2_v2)
+    if ! corriendo; then rojo "la v2 no esta corriendo: primero 'go2v2 lanzar' (en otra terminal)"; exit 1; fi
+    # opcional: velocidad de giro (fraccion de 60 grados/s, por defecto 0.75): go2v2 calibrar-fantasmas 1.0
+    amarillo "el perro se va a PARAR y dar UNA VUELTA en el sitio: deja ~1 m libre alrededor (CIRCULO = pausa)"
+    docker exec -it -e GO2V2_SILENCIO=1 "$NOMBRE" /entrypoint.sh ros2 run go2_v2 calibrar_fantasmas \
+      ${1:+--ros-args -p giro:=$1}
     ;;
   mapa)
     # el mapa de rutas (lo que usa el planificador, con las pisadas) + la nube 3D (.pcd, para verla)

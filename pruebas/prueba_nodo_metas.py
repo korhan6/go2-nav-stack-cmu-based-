@@ -42,11 +42,15 @@ pts = np.vstack([piso, fant])
 n.subs["/terrain_map"](nube(pts))
 assert n.pubs["/terrain_map_go2"].salida[-1].width == len(pts)            # todavia no piso nada
 # el perro camina por y=0 de x=0.3 a x=2.3 (lidar 0.3 adelante del centro)
-for k in range(30):
-    n.subs["/state_estimation"](odom(0.3 + k*0.07, 0.0, 0.0)); paso()
+for k in range(30):                                # el mapa de terreno llega todo el tiempo
+    n.subs["/state_estimation"](odom(0.3 + k*0.07, 0.0, 0.0)); paso(); n.subs["/terrain_map"](nube(pts))
 n.subs["/terrain_map"](nube(pts))
 out = n.pubs["/terrain_map_go2"].salida[-1]
 assert out.width == len(piso), out.width                                    # el fantasma se borro
+# una persona parada DESPUES donde el perro ya camino (x=2.0): NO se borra
+pers = np.c_[np.full(8, 2.0), np.linspace(-0.05, 0.05, 8), np.full(8, 0.0), np.linspace(0.2, 0.6, 8)]
+n.subs["/terrain_map"](nube(np.vstack([piso, pers])))
+assert n.pubs["/terrain_map_go2"].salida[-1].width == len(piso) + len(pers), "la persona desaparecio"
 # meta con el planificador propio -> way_point + ruta
 gp = F.Msg(); gp.point.x, gp.point.y, gp.point.z = 2.5, 0.0, 0.0
 n.subs["/goal_point"](gp)
@@ -61,4 +65,6 @@ assert len(gr.data) == gr.info.width * gr.info.height
 res = n.servicios["/go2/guardar_grilla"](None, F.Msg())
 assert res.success and os.path.exists(os.path.join(d, "grilla_ultima.npz"))
 assert n.servicios["/go2/olvidar_pisadas"](None, F.Msg()).success and not n.grilla.pisadas.any()
+ll = n.pubs["/go2/llegada"].salida
+assert ll and "llego" in json.loads(ll[-1].data), "go2_metas no publica /go2/llegada"
 print("nodo metas: carga mapa, borra el fantasma pisado, ruta + way_point, grilla RViz, guarda. estado:", est)

@@ -144,3 +144,76 @@ def xyz_de_nube(data, n, paso, offsets):
     for i, o in enumerate(offsets):
         xyz[:, i] = np.ascontiguousarray(crudo[:, o:o + 4]).view(np.float32)[:, 0]
     return xyz, crudo
+
+
+def calibrar_fantasmas(nubes, centros, tam=0.1, radio=4.0, z_min_rel=-0.2, ventanas=(0.5, 0.75, 1.0),
+                       minimos=range(2, 9), guardar_real=0.97, persistencia=0.15):
+    """Elige min_puntos y ventana del filtro de fantasmas con lo que el lidar vio quieto / girando en el sitio.
+
+    nubes: [(t, xyz (n, 3) en el mapa)], centros: [(x, y, z)] del lidar en cada nube.
+      REAL     = punto cuyo voxel aparece en muchas nubes (>= 'persistencia' de ellas, minimo 3): paredes,
+                 muebles, patas. Tiene que QUEDAR.
+      FANTASMA = punto cuyo voxel aparece en UNA sola nube y sin nada real alrededor: ruido. Tiene que IRSE.
+    Para cada ventana se cuenta el vecindario de cada punto como lo hace el filtro, y se prueban todos los
+    minimos: gana el que saca mas fantasmas guardando al menos 'guardar_real' de lo real (a igualdad, la
+    ventana mas corta: reacciona antes). Tope 8: una persona CAMINANDO deja menos puntos en el mismo lugar que
+    algo quieto, y un filtro mas exigente la podria borrar. Devuelve un dict con min_puntos, ventana y como queda."""
+    n = len(nubes)
+    if n < 10:
+        return None
+    claves = []
+    for (t, xyz), c in zip(nubes, centros):
+        xyz = np.asarray(xyz, np.float64)
+        dentro = ((np.hypot(xyz[:, 0] - c[0], xyz[:, 1] - c[1]) < radio) & (xyz[:, 2] - c[2] > z_min_rel))
+        claves.append((t, codificar(indices(xyz, tam)), dentro, indices(xyz, tam)))
+    # en cuantas nubes aparece cada voxel
+    por_nube = np.concatenate([np.unique(k) for _, k, _, _ in claves])
+    uk, veces = np.unique(por_nube, return_counts=True)
+    umbral_real = max(3, int(np.ceil(persistencia * n)))
+
+    def apariciones(k):
+        i = np.searchsorted(uk, k)
+        i[i >= len(uk)] = 0
+        return np.where(uk[i] == k, veces[i], 0)
+    real_uk = uk[veces >= umbral_real]
+    real_cnt = np.ones(len(real_uk), np.int64)
+    etiquetas = []
+    for t, k, dentro, ijk in claves:
+        ap = apariciones(k)
+        real = dentro & (ap >= umbral_real)
+        aislado = contar_vecindario(ijk, real_uk, real_cnt) == 0
+        fantasma = dentro & (ap == 1) & aislado
+        etiquetas.append((real, fantasma))
+    tot_real = sum(int(r.sum()) for r, _ in etiquetas)
+    tot_fant = sum(int(f.sum()) for _, f in etiquetas)
+    if tot_real == 0:
+        return None
+    resultados = []
+    for v in ventanas:
+        cr, cf = [], []
+        hist = []
+        for (t, k, dentro, ijk), (real, fant) in zip(claves, etiquetas):
+            hist = [(tt, kk) for tt, kk in hist if t - tt <= v and tt <= t]
+            hist.append((t, k))
+            uk2, cu2 = np.unique(np.concatenate([kk for _, kk in hist]), return_counts=True)
+            cnt = contar_vecindario(ijk, uk2, cu2)
+            cr.append(cnt[real])
+            cf.append(cnt[fant])
+        cr = np.concatenate(cr) if cr else np.zeros(0, np.int64)
+        cf = np.concatenate(cf) if cf else np.zeros(0, np.int64)
+        for m in minimos:
+            guarda = float((cr >= m).mean()) if len(cr) else 1.0
+            quita = float((cf < m).mean()) if len(cf) else 0.0
+            resultados.append({"ventana": float(v), "min_puntos": int(m), "guarda_real": round(guarda, 4),
+                               "quita_fantasmas": round(quita, 4)})
+    buenos = [r for r in resultados if r["guarda_real"] >= guardar_real]
+    if buenos:
+        # los que sacan casi tantos fantasmas como el mejor (0.5 %): de esos, el que mas real guarda
+        tope = max(r["quita_fantasmas"] for r in buenos)
+        casi = [r for r in buenos if r["quita_fantasmas"] >= tope - 0.005]
+        mejor = max(casi, key=lambda r: (r["guarda_real"], -r["ventana"], -r["min_puntos"]))
+    else:
+        mejor = max(resultados, key=lambda r: (r["guarda_real"], r["quita_fantasmas"]))
+        mejor = dict(mejor, aviso="no llegue a guardar %.0f %% de lo real: uso el mas suave" % (100 * guardar_real))
+    mejor.update({"nubes": n, "puntos_reales": tot_real, "fantasmas_vistos": tot_fant})
+    return mejor

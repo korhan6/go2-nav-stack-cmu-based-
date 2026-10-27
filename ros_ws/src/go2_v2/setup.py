@@ -31,5 +31,6 @@ setup(
         "mapa = go2_v2.mapa:main",
         "metas = go2_v2.metas:main",
         "ps4 = go2_v2.ps4:main",
+        "calibrar_fantasmas = go2_v2.calibrar_fantasmas:main",
     ]},
 )

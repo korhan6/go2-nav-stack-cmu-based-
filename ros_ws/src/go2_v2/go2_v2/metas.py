@@ -113,11 +113,17 @@ class MetasPropio(object):
     planificador local de CMU un way_point 'adelante' m mas alla sobre la ruta. Si la meta no se alcanza
     (escalera, contra algo), va al punto alcanzable mas cerca y avisa una vez."""
 
-    def __init__(self, grilla, adelante=1.2, espera=4.0, llegada=0.35):
+    def __init__(self, grilla, adelante=1.2, espera=4.0, llegada=0.35, llegada_lado=0.5, angulo_recto=35.0):
         self.g = grilla
         self.adelante = adelante
         self.espera = espera            # s sin ruta posible -> quieto y aviso
+        # LLEGADA (26/10: al llegar daba vueltas). Meta DE FRENTE (a menos de 'angulo_recto' grados de donde
+        # mira): llega hasta 'llegada' m (el centro; la nariz queda encima). Meta al COSTADO o atras: se
+        # queda a 'llegada_lado' m (~30 cm del cuerpo) SIN girar: el seguidor de CMU giraba en el sitio para
+        # encararla. Al llegar, el way_point pasa a ser donde esta el perro (CMU no tiene a donde girar)
         self.llegada = llegada
+        self.llegada_lado = llegada_lado
+        self.angulo_recto = math.radians(angulo_recto)
         self.meta = None
         self.modo = None                # 'propio' | 'llegando' | 'sin_ruta' | None
         self.camino = None
@@ -134,20 +140,27 @@ class MetasPropio(object):
         self.parcial_avisado = False
         self.way = None
 
-    def paso(self, pos, t=0.0):
+    def de_frente(self, pos, yaw):
+        if yaw is None:
+            return True
+        r = math.atan2(self.meta[1] - pos[1], self.meta[0] - pos[0]) - yaw
+        return abs(math.atan2(math.sin(r), math.cos(r))) <= self.angulo_recto
+
+    def paso(self, pos, t=0.0, yaw=None):
         if self.meta is None or pos is None or self.modo == "sin_ruta":
             return []
         dist = math.hypot(self.meta[0] - pos[0], self.meta[1] - pos[1])
         if self.modo == "llego":
-            if dist < self.llegada + 0.4:           # quieto en la meta: no replanificar ni mover nada
+            if dist < max(self.llegada, self.llegada_lado) + 0.4:   # quieto en la meta: no replanificar
                 return []
             self.modo = "propio"                    # lo movieron lejos: vuelve
             self.way = None
-        if dist < self.llegada:
+        if dist < self.llegada or (dist < self.llegada_lado and not self.de_frente(pos, yaw)):
             self.modo = "llego"
             self.camino = None
-            self.way = self.meta
-            return [("way", self.meta)]
+            self.way = (pos[0], pos[1], self.meta[2])   # se queda donde esta (sin girar hacia la meta)
+            self.avisos.append("llegue: a %.2f m de la meta" % dist)
+            return [("way", self.way)]
         c = self.g.planificar(pos[:2], self.meta[:2], lo_mas_cerca=True)
         if c is None or len(c) < 2:
             if c is not None:                      # ya esta en el destino
@@ -204,7 +217,10 @@ def main():
             self.grilla = Grilla(res=0.1, lado=float(P("mapa_lado", 60.0).value),
                                  altura=float(P("ruta_altura", 0.3).value),
                                  radio=float(P("ruta_radio", 0.25).value))
-            self.mp = MetasPropio(self.grilla, adelante=float(P("adelante", 1.2).value))
+            self.mp = MetasPropio(self.grilla, adelante=float(P("adelante", 1.2).value),
+                                  llegada=float(P("llegada", 0.35).value),
+                                  llegada_lado=float(P("llegada_lado", 0.5).value),
+                                  angulo_recto=float(P("angulo_recto", 35.0).value))
             from nav_msgs.msg import Path
             self.Path = Path
             self.pub_ruta = self.create_publisher(Path, "/go2/ruta", 2)
@@ -217,6 +233,8 @@ def main():
             self.carpeta = os.path.expanduser(str(P("carpeta", "~/.go2_v2/mapas").value))
             self.yaw = 0.0
             self.nube = None
+            self.crudo = None              # el terreno SIN filtrar (para confirmar fantasmas bajo el cuerpo)
+            self.n_confirmados = 0         # celdas de fantasma confirmadas (el cuerpo paso por encima)
             self.n_borrados = 0
             cargar = str(P("cargar_mapa", "").value)
             if cargar:
@@ -236,6 +254,8 @@ def main():
             self.pub_way = self.create_publisher(PointStamped, "/way_point", 5)
             self.pub_far = self.create_publisher(PointStamped, "/far_goal", 5)
             self.pub_est = self.create_publisher(String, "/go2/metas_estado", 5)
+            # para el guardian (5 Hz): distancia a la meta y si llego -> frena al llegar y se queda quieto
+            self.pub_llegada = self.create_publisher(String, "/go2/llegada", 5)
             # la pose sale a miles por segundo: se guarda cruda y se lee cuando hace falta
             self.create_subscription(Odometry, "/state_estimation", self.cb_odom, qos_profile_sensor_data, raw=True)
             self.create_subscription(PointCloud2, "/terrain_map", self.cb_terreno, 2)
@@ -289,6 +309,9 @@ def main():
                 out.data = buf
                 self.pub_terreno.publish(out)
             self.nube = p[ok & (p[:, 3] < 1.49)]       # sin las 'paredes sin datos' pegadas al perro
+            if self.pos is not None:                   # lo de cerca, sin filtrar: para 'pisar'
+                cerca = np.hypot(p[:, 0] - self.pos[0], p[:, 1] - self.pos[1]) < 0.8
+                self.crudo = p[cerca & (p[:, 3] < 1.49)]
 
         def srv_guardar(self, _req, res):
             os.makedirs(self.carpeta, exist_ok=True)
@@ -389,11 +412,13 @@ def main():
         def paso(self):
             pos = self.leer_pos()
             if pos is not None:
-                # por donde paso el cuerpo no hay nada solido (manejado con el PS4/teclado o solo)
-                self.grilla.pisar(pos[0], pos[1], self.yaw)
+                # por donde pasa el cuerpo no hay nada solido: si el mapa dice que si, era un fantasma
+                nuevos = self.grilla.pisar(pos[0], pos[1], self.yaw, nube=self.crudo)
+                self.n_confirmados += nuevos
             if self.propio:
                 self.actualizar_grilla(pos)
-                self.publicar(self.mp.paso(pos, self.t()))
+                self.publicar(self.mp.paso(pos, self.t(), self.yaw))
+                self.llegada()
                 for a in self.mp.avisos:
                     self.get_logger().warn(a)
                 self.mp.avisos = []
@@ -420,12 +445,21 @@ def main():
             if self.m.modo != antes and antes is not None:
                 self.get_logger().info("meta: cambio a %s" % self.m.modo.upper())
 
+        def llegada(self):
+            m = self.mp
+            d = {"d": None, "llego": False}
+            if m.meta is not None and self.pos is not None and m.modo != "sin_ruta":
+                d["d"] = round(math.hypot(m.meta[0] - self.pos[0], m.meta[1] - self.pos[1]), 3)
+                d["llego"] = m.modo == "llego"
+            self.pub_llegada.publish(String(data=json.dumps(d)))
+
         def estado(self):
             m = self.mp if self.propio else self.m
             d = {"planificador": "propio" if self.propio else "far", "modo": m.modo, "meta": m.meta}
             if m.meta is not None and self.pos is not None:
                 d["distancia"] = round(math.hypot(m.meta[0] - self.pos[0], m.meta[1] - self.pos[1]), 2)
             d["fantasmas_pisados_borrados"] = self.n_borrados
+            d["celdas_fantasma"] = int(self.grilla.fantasmas.sum())
             self.n_borrados = 0
             if self.propio and self.mp.camino:
                 from .ruta import largo

@@ -1,4 +1,5 @@
 """Metas directo / FAR, sin ROS: python3 pruebas/prueba_metas.py"""
+import math
 import os
 import sys
 
@@ -80,11 +81,22 @@ def main():
     mp.paso((-1.0, 0.0, 0.0), t=1.4)
     assert len(mp.avisos) == 1 and "no se alcanza" in mp.avisos[0], mp.avisos
     assert mp.camino[-1][1] > 4.0
-    # llega: manda la meta una vez y se queda quieto (no replanifica ni mueve el way_point)
+    # LLEGA de frente (meta a 0.3 m, mirando hacia ella): queda quieto donde esta (way_point = el perro)
     mp.nueva_meta((-1.0, 0.3, 0.0), t=2.0)
-    assert mp.paso((-1.0, 0.0, 0.0), t=2.2) == [("way", (-1.0, 0.3, 0.0))] and mp.modo == "llego"
+    assert mp.paso((-1.0, 0.0, 0.0), t=2.2, yaw=math.pi / 2) == [("way", (-1.0, 0.0, 0.0))] and mp.modo == "llego"
     assert mp.paso((-0.9, 0.1, 0.0), t=2.4) == [] and mp.modo == "llego"
     assert mp.paso((0.5, 0.0, 0.0), t=2.6) and mp.modo == "propio"       # lo alejaron: vuelve
+    # meta de frente a 0.45 m: todavia no llego (sigue hasta ~0.35)
+    mp.nueva_meta((-1.0, 0.45, 0.0), t=2.7)
+    o = mp.paso((-1.0, 0.0, 0.0), t=2.8, yaw=math.pi / 2)
+    assert mp.modo == "propio" and o and o[0][1] != (-1.0, 0.0, 0.0), o
+    # la MISMA distancia pero la meta al COSTADO (90 grados): se queda ahi, sin girar hacia ella
+    mp.nueva_meta((-1.0, 0.45, 0.0), t=2.85)
+    assert mp.paso((-1.0, 0.0, 0.0), t=2.9, yaw=0.0) == [("way", (-1.0, 0.0, 0.0))] and mp.modo == "llego"
+    # al costado pero lejos (0.8 m): sigue yendo
+    mp.nueva_meta((-1.0, 0.8, 0.0), t=2.92)
+    mp.paso((-1.0, 0.0, 0.0), t=2.95, yaw=0.0)
+    assert mp.modo == "propio"
     # el way_point no tiembla: la misma ruta con la pose 5 cm corrida no manda otro
     mp.nueva_meta((-1.0, 3.5, 0.0), t=3.0)
     assert mp.paso((-1.0, 0.0, 0.0), t=3.2)

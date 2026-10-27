@@ -2,6 +2,7 @@
 de tipeo, atributos mal escritos y flujos rotos sin tener ROS instalado.
 python3 v2/pruebas/prueba_nodos_sin_ros.py"""
 import json
+import math
 import os
 import sys
 import types
@@ -93,6 +94,11 @@ class Node(object):
 
     def create_service(self, _t, nombre, cb, **_kw):
         self.servicios[nombre] = cb
+
+    def create_client(self, _t, nombre, **_kw):
+        llamadas = []
+        return types.SimpleNamespace(nombre=nombre, llamadas=llamadas, service_is_ready=lambda: True,
+                                     call_async=lambda r: llamadas.append(r))
 
     def get_logger(self):
         return self._logger
@@ -256,6 +262,30 @@ def probar_guardian():
     del req[:]
     correr(0.6)
     assert API_STOPMOVE in [r.header.identity.api_id for r in req]
+    # el control CONECTADO pero quieto (joy_node manda 20 Hz igual) NO borra un freno de seguridad
+    n.g.vueltas = "da vueltas (prueba)"
+    quieto = Msg()
+    quieto.header.frame_id = "joy"
+    quieto.axes = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+    quieto.buttons = [0] * 13
+    for _ in range(5):
+        n.subs["/joy"](quieto)
+    assert n.g.vueltas is not None
+    mueve = Msg()
+    mueve.header.frame_id = "joy"
+    mueve.axes = [0.0, 0.6, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0]
+    mueve.buttons = [0] * 13
+    n.subs["/joy"](mueve)                                   # moverlo si: es una orden nueva
+    assert n.g.vueltas is None
+    n.subs["/joy"](quieto)
+    # /go2/llegada de go2_metas llega al guardian
+    ll = Msg()
+    ll.data = json.dumps({"d": 0.3, "llego": True})
+    n.subs["/go2/llegada"](ll)
+    assert n.g.meta_llego and abs(n.g.meta_dist - 0.3) < 1e-9
+    ll.data = json.dumps({"d": None, "llego": False})
+    n.subs["/go2/llegada"](ll)
+    assert not n.g.meta_llego
     # joy de RViz / go2v2: ignorado; joy del control: SHARE + CRUZ = acostar
     j = Msg()
     j.header.frame_id = "goalpoint_tool"
@@ -309,7 +339,24 @@ def probar_guardian():
         lazo()
     assert API_MOVE not in [r.header.identity.api_id for r in req], "camina sin lidar"
     assert "lidar" in (n.g.motivo_parada or "")
-    print("guardian: Move/StopMove, joy ajenos ignorados, acostar/levantar, /stop a CMU, estado %s" % sorted(est))
+    # FRENO DE CERCANIA: el nodo pasa el mapa de terreno al marco del cuerpo (perro en (5, 2) mirando a +y)
+    import array
+    n.pose_lidar = (5.0, 2.0, math.pi / 2)                      # centro del cuerpo: (5.0, 1.7)
+    pts = np.array([[5.0, 2.2, 0.0, 0.5],                       # 0.5 m delante del centro, 50 cm de alto: SI
+                    [5.0, 2.2, 0.0, 0.1],                       # muy bajo: no
+                    [5.0, 2.3, 0.0, 1.5],                       # 'pared sin datos' de CMU: no
+                    [5.0, 3.9, 0.0, 0.5]], np.float32)          # a 2.2 m: no
+    t = Msg()
+    t.width, t.height, t.point_step = len(pts), 1, 16
+    t.fields = [Msg(name=k, offset=o) for k, o in zip(("x", "y", "z", "intensity"), (0, 4, 8, 12))]
+    b = array.array("B")
+    b.frombytes(pts.tobytes())
+    t.data = b
+    n.terreno_raw = t
+    n.revisar_cerca()
+    o = n.g.obs_cuerpo
+    assert o.shape == (1, 2) and abs(o[0, 0] - 0.5) < 1e-5 and abs(o[0, 1]) < 1e-5, o
+    print("guardian: Move/StopMove, joy ajenos ignorados, acostar/levantar, /stop a CMU, freno, estado %s" % sorted(est))
 
 
 def probar_herramientas(tmp):
@@ -399,7 +446,22 @@ def probar_fantasmas_y_mapa(tmp):
     res = mp.servicios["/go2/borrar_mapa"](None, Msg())
     res = mp.servicios["/go2/guardar_mapa"](None, Msg())
     assert not res.success
-    print("fantasmas: %d fantasmas sacados, nube intacta; mapa: publica, guarda .pcd, borra" % est["fantasmas"])
+    # CALIBRACION guardada ('go2v2 calibrar-fantasmas'): la toma al arrancar y al recargar
+    arch = os.path.join(tmp, "fantasmas.yaml")
+    n.archivo = arch
+    assert not n.cargar_calibracion() and n.f.min_puntos == 5             # sin archivo: lo del launch
+    with open(arch, "w") as f:
+        f.write("# prueba\nventana: 0.75\nmin_puntos: 3\nguarda_real: 0.99\nquita_fantasmas: 0.98\n")
+    res = n.servicios["/go2/fantasmas_recargar"](None, Msg())
+    assert res.success and n.f.min_puntos == 3 and n.f.ventana == 0.75, res.message
+    for _, cb in n.timers:
+        cb()
+    est2 = json.loads(n.pubs["/go2/fantasmas_estado"].salida[-1].data)
+    assert est2["calibrado"] and est2["min_puntos"] == 3
+    with open(arch, "w") as f:
+        f.write("esto: [no es yaml valido")
+    assert not n.cargar_calibracion() and n.f.min_puntos == 3                # archivo roto: no se cae
+    print("fantasmas: %d fantasmas sacados, nube intacta, calibracion; mapa: publica, guarda .pcd, borra" % est["fantasmas"])
 
 
 def probar_modelo():

@@ -310,6 +310,96 @@ def main():
     g.orden(3.0, 0.4, 0.0, 0.0)
     o = g.paso(3.0)                                         # 1 s sin lidar
     assert API_STOPMOVE in apis(o) and API_MOVE not in apis(o)
+    # LLEGADA: el planificador manda 0.5 m/s y giros de +-1 cerca de la meta -> el guardian baja el tope
+    LL = {"frenar_desde": 1.5, "d_llegada": 0.4, "v_lejos": 0.5, "v_llegada": 0.25, "giro_llegada": 0.5}
+    g = Guardian(llegada=LL)
+
+    def mov(g, t, d, llego=False, vx=0.5, wz=1.0):
+        g.terreno(t)
+        g.meta(t, d, llego)
+        g.orden(t, vx, 0.0, wz)
+        return [p for a, p in g.paso(t) if a == API_MOVE], g.paso
+    m, _ = mov(g, 0.0, 3.0)
+    assert m[0]["x"] == 0.5 and m[0]["z"] == 1.0                           # lejos: no se toca
+    m, _ = mov(g, 0.1, 0.95, wz=1.4)
+    assert 0.3 < m[0]["x"] < 0.4 and abs(m[0]["z"] - 1.0) < 1e-6, m      # a 1 m: ya frena (giro tope 1.0)
+    m, _ = mov(g, 0.2, 0.4, wz=-1.0)
+    assert abs(m[0]["x"] - 0.25) < 1e-6 and abs(m[0]["z"] + 0.5) < 1e-6, m  # al final: 0.25 y 30 grados/s
+    m, _ = mov(g, 0.3, 0.3, llego=True)                                     # llego: QUIETO
+    assert not m and not g.moviendo and any("llego" in a for a in g.avisos)
+    m, _ = mov(g, 0.4, 0.3, llego=True)
+    assert not m                                                            # y sigue quieto
+    g.palanca(0.5)                                                          # PS4/teclado: manda el usuario
+    m, _ = mov(g, 0.5, 0.3, llego=True)
+    assert m and m[0]["x"] == 0.5
+    g.manual = True                                                         # manual (R2): no se mete
+    m, _ = mov(g, 2.0, 0.3, llego=True)
+    assert m and m[0]["x"] == 0.5
+    g.manual = False
+    m, _ = mov(g, 3.0, 4.0)                                                 # meta nueva lejos: sigue normal
+    assert m and m[0]["x"] == 0.5
+    g.terreno(5.0)
+    g.orden(5.0, 0.5, 0.0, 0.0)                                             # metas callado > 1 s: no frena
+    assert [p for a, p in g.paso(5.0) if a == API_MOVE][0]["x"] == 0.5
+    # llegada + suavizado: al llegar frena en rampa (no de golpe) y despues StopMove
+    g = Guardian(suavizado=S, llegada=LL)
+    for k in range(100):
+        t = k * 0.02
+        mov(g, t, 0.6)
+    o = []
+    for k in range(40):
+        t = 2.0 + k * 0.02
+        g.terreno(t)
+        g.meta(t, 0.3, True)
+        g.orden(t, 0.3, 0.0, 0.0)
+        o += g.paso(t)
+    movs = [p["x"] for a, p in o if a == API_MOVE]
+    assert movs and movs[0] > 0.2 and API_STOPMOVE in apis(o) and not g.moviendo, movs[:3]
+    # BOTONES SOLOS: CRUZ = acostar, TRIANGULO = levantar (sin SHARE)
+    g = Guardian()
+    b = [0] * 13
+    b[BOTON["cruz"]] = 1
+    o = g.joystick(0.0, b) + correr(g, 0.0, 1.0)
+    assert g.acostado and API_STANDDOWN in apis(o)
+    g.joystick(1.0, [0] * 13)
+    b = [0] * 13
+    b[BOTON["triangulo"]] = 1
+    o = g.joystick(1.1, b) + correr(g, 1.1, 4.0)
+    assert not g.acostado and API_STANDUP in apis(o)
+    # FRENO DE CERCANIA: una persona 15 cm delante de la nariz -> no avanza (aunque el planificador lo pida)
+    FR = {"largo": 0.70, "ancho": 0.36, "margen": 0.30, "margen_v": 0.4}
+    g = Guardian(freno=FR)
+
+    def mueve(g, t, vx, vy=0.0, wz=0.0):
+        g.terreno(t)
+        g.orden(t, vx, vy, wz)
+        return [p for a, p in g.paso(t) if a == API_MOVE]
+    g.obstaculos(0.0, [[0.50, 0.05]])                                     # nariz en 0.35: a 15 cm
+    assert not mueve(g, 0.0, 0.4) and g.freno_activo == "adelante"
+    assert sum("FRENO" in a for a in g.avisos) == 1
+    m = mueve(g, 0.02, 0.4, wz=0.5)                                       # girar si puede
+    assert m and m[0]["x"] == 0.0 and m[0]["z"] == 0.5
+    m = mueve(g, 0.04, -0.3)                                              # alejarse (atras) si
+    assert m and m[0]["x"] == -0.3
+    g.obstaculos(0.1, [[1.20, 0.0]])                                      # lejos (85 cm): libre
+    m = mueve(g, 0.1, 0.4)
+    assert m and m[0]["x"] == 0.4 and g.freno_activo is None
+    g.obstaculos(0.2, [[0.50, 0.40]])                                     # adelante pero al costado: libre
+    assert mueve(g, 0.2, 0.4)[0]["x"] == 0.4
+    g.obstaculos(0.3, [[-0.45, 0.0]])                                     # atras: frena solo hacia atras
+    assert mueve(g, 0.3, 0.4)[0]["x"] == 0.4 and not mueve(g, 0.32, -0.3)
+    g.obstaculos(0.4, [[0.0, 0.30]])                                      # al costado izquierdo
+    m = mueve(g, 0.4, 0.3, vy=0.2)
+    assert m and m[0]["y"] == 0.0 and m[0]["x"] == 0.3
+    assert mueve(g, 0.42, 0.0, vy=-0.2)[0]["y"] == -0.2                   # hacia la derecha si
+    # mas rapido = frena antes: a 1 m/s el margen es 0.70 m
+    g.obstaculos(0.5, [[0.95, 0.0]])
+    assert not mueve(g, 0.5, 1.0) and mueve(g, 0.52, 0.3)
+    g.obstaculos(0.6, [[0.50, 0.0]])
+    g.manual = True                                                       # manejando sin evasion: no se mete
+    assert mueve(g, 0.6, 0.4)[0]["x"] == 0.4
+    g.manual = False
+    assert mueve(g, 2.0, 0.4)[0]["x"] == 0.4                              # datos viejos (> 1 s): no frena
     print("OK guardian")
 
 

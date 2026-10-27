@@ -25,3 +25,21 @@ go2_guardian:
     acc_giro: 2.0               # rad/s^2 al empezar a girar (0 -> 60 grados/s en 0.5 s)
     dec_giro: 3.0               # rad/s^2 al dejar de girar o cambiar de sentido
     tau_giro: 0.15              # s: filtro del giro (se come el temblor; mas alto = mas suave y mas lento)
+    # LLEGADA: desde frenar_desde m de la meta baja el tope de velocidad y giro en rampa (hasta v_llegada /
+    # giro_llegada a d_llegada m) y cuando go2_metas dice que llego se queda QUIETO hasta otra meta o hasta
+    # que muevas el control. llegada_suave: false = como antes
+    llegada_suave: true
+    frenar_desde: 1.5           # m de la meta: empieza a bajar
+    d_llegada: 0.4              # m: aca ya va al minimo
+    v_lejos: 0.5                # m/s: tope en 'frenar_desde' (si va mas lento, no cambia nada)
+    v_llegada: 0.25             # m/s: tope al final (el Go2 por debajo de ~0.2 pisa en el sitio)
+    giro_llegada: 0.5           # rad/s: tope de giro al final (~30 grados/s)
+    # FRENO DE CERCANIA: si hay algo (mas de freno_alto sobre el piso) a menos de freno_margen m (+ freno_margen_v
+    # x velocidad) de la nariz / la cola / los costados, no se mueve hacia ahi (girar y alejarse si). Ultima red
+    # de seguridad aparte del planificador; no aplica manejando sin evasion. freno_cercania: false = sin freno
+    freno_cercania: true
+    freno_margen: 0.30          # m delante de la nariz
+    freno_margen_v: 0.4         # m extra por cada m/s
+    freno_alto: 0.25            # m sobre el piso: desde aca es obstaculo para el freno
+    freno_largo: 0.70           # m: el cuerpo del Go2
+    freno_ancho: 0.36

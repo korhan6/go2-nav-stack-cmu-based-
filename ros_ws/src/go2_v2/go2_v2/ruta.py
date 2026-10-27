@@ -9,8 +9,7 @@ camino mas corto que ENTRA por donde cabe el perro, y prefiere ir por el centro 
 Grilla (celdas de 'res' m, fija en el marco del mapa, centrada en el origen):
   -1 desconocido (se puede pasar, cuesta un poco mas)
    0 libre (se vio piso)
-   1 obstaculo (algo mas alto que 'altura' sobre el piso) o HUECO (piso mas de 'hueco' m por debajo
-     del piso del perro: escaleras para abajo)
+   1 obstaculo (algo mas alto que 'altura' sobre el piso). Los 'huecos' (piso mas bajo) ya no cuentan
 Cada nube del terreno reescribe las celdas que toca (lo que se movio se limpia solo).
 """
 import heapq
@@ -33,6 +32,11 @@ class Grilla(object):
         # PISADAS: celdas por donde paso el cuerpo del perro. Si paso, ahi no hay nada solido: lo que el
         # lidar crea ver ahi (fantasmas) se borra y no vuelve (ver 'filtrar_pisadas')
         self.pisadas = np.zeros((self.n, self.n), bool)
+        # FANTASMAS CONFIRMADOS: celdas donde el cuerpo del perro estuvo parado MIENTRAS el mapa decia que
+        # ahi habia un obstaculo: eso era mentira (un fantasma). Solo ESTAS se borran despues. 26/10: antes se
+        # borraba todo lo bajo (< 0.7 m) en CUALQUIER celda pisada, y si una persona se paraba donde el perro
+        # ya habia caminado, sus piernas desaparecian y el perro se le iba encima
+        self.fantasmas = np.zeros((self.n, self.n), bool)
 
     def celda(self, x, y):
         return (int(math.floor(x / self.res)) + self.n // 2, int(math.floor(y / self.res)) + self.n // 2)
@@ -50,18 +54,22 @@ class Grilla(object):
         j = np.floor(p[:, 1] / self.res).astype(np.int64) + self.n // 2
         ok = (i >= 0) & (i < self.n) & (j >= 0) & (j < self.n)
         i, j, p = i[ok], j[ok], p[ok]
-        obst = (p[:, 3] > self.altura) | (p[:, 2] < piso_z - self.hueco)
+        # 26/10: sin 'hueco' (piso mas bajo = obstaculo): marcaba negro medio cuarto y no avanzaba. Solo lo
+        # que sobresale mas de 'altura' del piso es obstaculo (OJO: una escalera para abajo ya no frena)
+        obst = p[:, 3] > self.altura
         k = i * self.n + j
         tocadas = np.unique(k)
         con_obst = np.unique(k[obst])
         plano = self.c.reshape(-1)
         plano[tocadas] = LIBRE
         plano[con_obst] = OBSTACULO
-        self.c[self.pisadas & (self.c == OBSTACULO)] = LIBRE
+        self.c[self.fantasmas & (self.c == OBSTACULO)] = LIBRE
 
-    def pisar(self, x, y, yaw, largo=0.6, ancho=0.36):
-        """El cuerpo del perro (rectangulo largo x ancho centrado en x, y, girado yaw) ocupa estas celdas:
-        quedan como pisadas (libres para siempre, hasta olvidar_pisadas)."""
+    def pisar(self, x, y, yaw, largo=0.6, ancho=0.36, nube=None, umbral=0.1, alto_max=0.7, achicar=0.05):
+        """El cuerpo del perro (rectangulo largo x ancho centrado en x, y, girado yaw) ocupa estas celdas.
+        nube (n, 4: x y z altura): el mapa de terreno de AHORA. Los 'obstaculos' (umbral < altura < alto_max)
+        que caen bajo el cuerpo (achicado 'achicar' m, para no tocar lo que esta pegado al costado) son
+        fantasmas confirmados: esas celdas se borran desde ahora (hasta olvidar_pisadas)."""
         r = 0.5 * math.hypot(largo, ancho)
         i0, j0 = self.celda(x - r, y - r)
         i1, j1 = self.celda(x + r, y + r)
@@ -75,15 +83,33 @@ class Grilla(object):
         fx = cx * math.cos(yaw) + cy * math.sin(yaw)
         fy = -cx * math.sin(yaw) + cy * math.cos(yaw)
         dentro = (np.abs(fx) <= largo / 2) & (np.abs(fy) <= ancho / 2)
-        nuevas = dentro & ~self.pisadas[i0:i1 + 1, j0:j1 + 1]
         self.pisadas[i0:i1 + 1, j0:j1 + 1] |= dentro
         self.c[i0:i1 + 1, j0:j1 + 1][dentro & (self.c[i0:i1 + 1, j0:j1 + 1] == OBSTACULO)] = LIBRE
-        return int(nuevas.sum())
+        if nube is None or len(nube) == 0:
+            return 0
+        p = np.asarray(nube)
+        p = p[(p[:, 3] > umbral) & (p[:, 3] < alto_max)]
+        if len(p) == 0:
+            return 0
+        # cada punto en el marco del cuerpo: solo los que caen DEBAJO del cuerpo (achicado)
+        dx, dy = p[:, 0] - x, p[:, 1] - y
+        px = dx * math.cos(yaw) + dy * math.sin(yaw)
+        py = -dx * math.sin(yaw) + dy * math.cos(yaw)
+        sel = (np.abs(px) <= largo / 2 - achicar) & (np.abs(py) <= ancho / 2 - achicar)
+        if not sel.any():
+            return 0
+        pi = np.floor(p[sel, 0] / self.res).astype(np.int64) + self.n // 2
+        pj = np.floor(p[sel, 1] / self.res).astype(np.int64) + self.n // 2
+        ok = (pi >= 0) & (pi < self.n) & (pj >= 0) & (pj < self.n)
+        pi, pj = pi[ok], pj[ok]
+        nuevas = int((~self.fantasmas[pi, pj]).sum())
+        self.fantasmas[pi, pj] = True
+        return nuevas
 
     def filtrar_pisadas(self, xyz_h, alto_max=0.7, umbral=0.1):
         """Mascara de los puntos del mapa de terreno que se QUEDAN: se sacan los 'obstaculos' (mas de
-        'umbral' sobre el piso) que caen en celdas pisadas, salvo los muy altos (> alto_max: una persona
-        parada ahi despues sigue viendose de la cintura para arriba)."""
+        'umbral' sobre el piso, menos de alto_max) que caen en celdas de FANTASMAS CONFIRMADOS (ver pisar).
+        Lo que aparece despues en una celda solo pisada (una persona que se paro ahi) se ve normal."""
         p = np.asarray(xyz_h)
         if len(p) == 0:
             return np.zeros(0, bool)
@@ -91,14 +117,15 @@ class Grilla(object):
         j = np.floor(p[:, 1] / self.res).astype(np.int64) + self.n // 2
         ok = (i >= 0) & (i < self.n) & (j >= 0) & (j < self.n)
         pis = np.zeros(len(p), bool)
-        pis[ok] = self.pisadas[i[ok], j[ok]]
+        pis[ok] = self.fantasmas[i[ok], j[ok]]
         return ~(pis & (p[:, 3] > umbral) & (p[:, 3] < alto_max))
 
     def olvidar_pisadas(self):
         self.pisadas[:] = False
+        self.fantasmas[:] = False
 
     def guardar(self, ruta):
-        np.savez_compressed(ruta, c=self.c, pisadas=self.pisadas, res=self.res)
+        np.savez_compressed(ruta, c=self.c, pisadas=self.pisadas, fantasmas=self.fantasmas, res=self.res)
 
     def cargar(self, ruta):
         d = np.load(ruta)
@@ -106,6 +133,8 @@ class Grilla(object):
             raise ValueError("el mapa guardado tiene otro tamano/resolucion")
         self.c[:] = d["c"]
         self.pisadas[:] = d["pisadas"]
+        # mapas viejos (sin 'fantasmas'): no se borra nada (lo seguro)
+        self.fantasmas[:] = d["fantasmas"] if "fantasmas" in d.files else False
 
     def costos(self, i0, i1, j0, j1):
         """Ventana [i0:i1, j0:j1]: (prohibido bool, costo extra float)."""

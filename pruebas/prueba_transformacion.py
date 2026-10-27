@@ -108,6 +108,14 @@ def main():
     # sin archivo de calibracion -> los valores de CMU
     d, ok = T.leer_calibracion("/no/existe.yaml")
     assert not ok and d["ang_z2x_proj"] == 0.15 and math.isclose(d["ang_z2y_proj"], -0.28)
+    # la caja del perro hasta +0.05 delante del L1 (zona ciega 0.3): una pata de adelante (x -0.02, z -0.35
+    # en 'body') se saca; un pie de una persona 15 cm mas adelante (x 0.15) queda
+    inv = T.R_NUBE                                      # body = R * L1  ->  L1 = R^T * body
+    pata = (np.array([[-0.02, 0.12, -0.35 + T.CAM_OFFSET * 0]]) + [0, 0, T.CAM_OFFSET]) @ inv
+    pie = (np.array([[0.15, 0.0, -0.35]]) + [0, 0, T.CAM_OFFSET]) @ inv
+    _, ok_cmu = T.transformar_xyz(np.vstack([pata, pie]))
+    _, ok_v2 = T.transformar_xyz(np.vstack([pata, pie]), caja_x_max=0.05)
+    assert ok_cmu[0] and not ok_v2[0] and ok_v2[1], (ok_cmu, ok_v2)
     print("OK")
 
 

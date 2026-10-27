@@ -41,6 +41,8 @@ class Sensores(Node):
         P = self.declare_parameter
         ruta = os.path.expanduser(P("calibracion", "~/Desktop/imu_calib_data.yaml").value)
         self.calib, cargada = T.leer_calibracion(ruta)
+        # la caja del propio perro llega hasta 'caja_adelante' m delante del L1 (ver transformacion.py)
+        self.caja_adelante = float(P("caja_adelante", 0.05).value)
         if cargada:
             self.get_logger().info("calibracion de la IMU cargada: %s" % ruta)
         else:
@@ -118,7 +120,8 @@ class Sensores(Node):
             self.est["sin_xyz"] += 1
             return
         paso = m.point_step
-        datos, k = T.transformar_nube_bytes(m.data, n, paso, [campos[c].offset for c in ("x", "y", "z")])
+        datos, k = T.transformar_nube_bytes(m.data, n, paso, [campos[c].offset for c in ("x", "y", "z")],
+                                            self.caja_adelante)
         out = PointCloud2()
         out.header.frame_id = "body"
         st = st_ns + self.desfase_ns

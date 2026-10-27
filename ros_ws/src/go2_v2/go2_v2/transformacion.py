@@ -63,11 +63,14 @@ Q_IMU = quat_desde_euler(0.0, PITCH_L1, 3.14159265358)   # body <- IMU del L1
 R_NUBE = matriz_de_quat(Q_NUBE)
 
 
-def transformar_xyz(xyz):
-    """(n, 3) en el marco del L1 -> (n, 3) en 'body' y mascara de los puntos que NO son del perro."""
+def transformar_xyz(xyz, caja_x_max=CAJA_X[1]):
+    """(n, 3) en el marco del L1 -> (n, 3) en 'body' y mascara de los puntos que NO son del perro.
+    caja_x_max: hasta donde (adelante del L1) llega la caja del perro. CMU: -0.1, con la zona ciega de
+    Point-LIO en 0.5 m las patas de adelante quedaban tapadas igual; con la zona ciega en 0.3 m hay que
+    llevarla a +0.05 (las patas de adelante pisan hasta ~0.0 del L1)."""
     p = np.asarray(xyz, np.float64) @ R_NUBE.T
     p[:, 2] -= CAM_OFFSET
-    en_caja = ((p[:, 0] > CAJA_X[0]) & (p[:, 0] < CAJA_X[1])
+    en_caja = ((p[:, 0] > CAJA_X[0]) & (p[:, 0] < caja_x_max)
                & (p[:, 1] > CAJA_Y[0]) & (p[:, 1] < CAJA_Y[1])
                & (p[:, 2] > CAJA_Z[0]) & (p[:, 2] < CAJA_Z[1]))
     return p, ~en_caja
@@ -117,7 +120,7 @@ def leer_calibracion(ruta):
         return d, False
 
 
-def transformar_nube_bytes(datos, n, paso, offsets):
+def transformar_nube_bytes(datos, n, paso, offsets, caja_x_max=CAJA_X[1]):
     """La nube cruda (bytes de un PointCloud2, n puntos de 'paso' bytes; x, y, z float32 en
     'offsets') -> (bytes de la nube en 'body' SIN los puntos del perro, puntos que quedan).
     Los demas campos (intensity, ring, time) van tal cual: Point-LIO los usa."""
@@ -125,7 +128,7 @@ def transformar_nube_bytes(datos, n, paso, offsets):
     xyz = np.empty((n, 3), np.float64)
     for i, o in enumerate(offsets):
         xyz[:, i] = np.ascontiguousarray(crudo[:, o:o + 4]).view(np.float32)[:, 0]
-    p, ok = transformar_xyz(xyz)
+    p, ok = transformar_xyz(xyz, caja_x_max)
     p32 = np.ascontiguousarray(p.astype(np.float32))
     for i, o in enumerate(offsets):
         crudo[:, o:o + 4] = np.ascontiguousarray(p32[:, i]).view(np.uint8).reshape(n, 4)

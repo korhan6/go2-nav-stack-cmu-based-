@@ -83,6 +83,36 @@ def main():
         raw[:, 4 * i:4 * i + 4] = xyz[:, i:i + 1].copy().view(np.uint8)
     leido, _ = xyz_de_nube(raw.tobytes(), 5, 48, [0, 4, 8])
     assert np.allclose(leido, xyz)
+    # CALIBRAR: 25 s girando a 10 Hz. Paredes (densas), una PATA de silla (1 punto por nube, fijo) y ruido:
+    # 30 puntos sueltos por nube + reflejos en parejas. Tiene que guardar la pata y sacar el ruido
+    from go2_v2.filtros import calibrar_fantasmas
+    rng = np.random.default_rng(1)
+    nubes, centros = [], []
+    pared = np.c_[np.full(400, 2.0), np.linspace(-2, 2, 400), np.linspace(0.0, 1.0, 400)]
+    for k in range(250):
+        t = k * 0.1
+        ruido = np.c_[rng.uniform(-3.5, 3.5, (30, 2)), rng.uniform(0.0, 1.0, 30)]
+        par = rng.uniform(-3, 3, 3)
+        reflejo = np.vstack([par, par + 0.05])                           # 2 puntos juntos, una vez
+        pata = np.array([[1.0, 0.5, 0.3]]) + rng.normal(0, 0.01, 3)
+        xyz = np.vstack([pared + rng.normal(0, 0.01, pared.shape), pata, ruido, reflejo])
+        nubes.append((t, xyz))
+        centros.append((0.0, 0.0, 0.4))
+    t0 = time.perf_counter()
+    r = calibrar_fantasmas(nubes, centros)
+    ms = (time.perf_counter() - t0) * 1000
+    assert r is not None and r["guarda_real"] >= 0.97 and r["quita_fantasmas"] > 0.9, r
+    assert r["min_puntos"] >= 3, r                                         # los reflejos en pareja tambien se van
+    f = FiltroFantasmas(min_puntos=r["min_puntos"], ventana=r["ventana"])
+    for (t, xyz), c in zip(nubes, centros):
+        ok = f.filtrar(t, xyz, c)
+    assert ok[400], "la pata de silla no puede ser fantasma"
+    ruido = nubes[-1][1][401:431]
+    dentro = (np.hypot(ruido[:, 0], ruido[:, 1]) < 4.0) & (ruido[:, 2] - 0.4 > -0.2)   # lo que el filtro mira
+    assert ok[:400].mean() > 0.97 and ok[401:431][dentro].mean() < 0.1, (ok[:400].mean(), ok[401:431][dentro].mean())
+    assert calibrar_fantasmas(nubes[:5], centros[:5]) is None              # muy pocas nubes
+    print("calibrar fantasmas: min_puntos %d, ventana %.2f s -> guarda %.1f %% de lo real, quita %.1f %% del "
+          "ruido (%.0f ms)" % (r["min_puntos"], r["ventana"], 100 * r["guarda_real"], 100 * r["quita_fantasmas"], ms))
     print("OK filtros")
 
 

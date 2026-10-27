@@ -8,6 +8,8 @@
   <arg name="rviz" default="true"/>
   <arg name="maxSpeed" default="1.0"/>           <!-- m/s, el tope del planificador local -->
   <arg name="autonomySpeed" default="1.0"/>      <!-- m/s navegando sola -->
+  <arg name="ciego" default="0.3"/>        <!-- m: zona ciega del lidar (CMU 0.5) -->
+  <arg name="caja_adelante" default="0.05"/>
   <arg name="sensorOffsetX" default="0.3"/>
   <arg name="sensorOffsetY" default="0.0"/>
   <arg name="cameraOffsetZ" default="0.0"/>
@@ -37,7 +39,10 @@
   </node>
 
   <!-- sensores del L1 -> marco 'body' (reemplaza transform_everything.py de CMU) -->
-  <node pkg="go2_v2" exec="sensores" name="go2_sensores" output="screen" respawn="true" respawn_delay="1.0"/>
+  <node pkg="go2_v2" exec="sensores" name="go2_sensores" output="screen" respawn="true" respawn_delay="1.0">
+    <!-- la caja que borra las patas llega hasta 'caja_adelante' delante del L1 (con ciego >= 0.5: -0.1) -->
+    <param name="caja_adelante" value="$(var caja_adelante)" />
+  </node>
 
   <!-- SLAM: Point-LIO con la IMU del L1 (mismos parametros que mapping_utlidar.launch de CMU) -->
   <!-- respawn: 'go2v2 slam-reset' lo mata y arranca de nuevo (mapa desde cero) sin relanzar todo -->
@@ -53,6 +58,10 @@
     <param name="filter_size_map" value="0.1" />
     <param name="cube_side_length" value="1000.0" />
     <param name="runtime_pos_log_enable" value="false" />
+    <!-- zona ciega: Point-LIO tira todo lo que esta a menos de 'ciego' m del L1. CMU: 0.5 -> una persona a
+         menos de medio metro de la nariz desaparecia de las nubes nuevas y el mapa la olvidaba a los 2 s:
+         el perro frenaba delante y despues se le iba encima. Las patas las saca la caja de go2_sensores -->
+    <param name="preprocess.blind" value="$(var ciego)"/>
     <remap from="/cloud_registered" to="/registered_scan" />
     <remap from="/aft_mapped_to_init" to="/state_estimation" />
   </node>
@@ -67,6 +76,7 @@
        Obstaculos a 10 cm (CMU 20 cm) para no "engordar" los bordes en pasos angostos.
        Llega mas cerca de la meta: frena a 0.2 m (CMU 0.3). -->
   <arg name="escala_min" default="0.45"/>
+  <arg name="revisar_giro" default="true"/>
   <!-- m sobre el piso desde donde algo es obstaculo. CMU: 0.3 -> el R1 acostado (~20 cm) era invisible
        y el perro se le tiraba encima. Mas bajo = ve cosas mas bajas, pero el ruido del L1 molesta mas. -->
   <arg name="altura_obstaculo" default="0.3"/>  <!-- como CMU: con 0.2 el ruido del L1 a 2 m armaba obstaculos falsos -->
@@ -83,7 +93,9 @@
     <param name="terrainVoxelSize" value="0.1" />
     <param name="useTerrainAnalysis" value="true" />
     <param name="checkObstacle" value="true" />
-    <param name="checkRotObstacle" value="false" />
+    <!-- al girar en el sitio, revisar que la cola/cabeza (0.7 m de largo) no barra lo de al costado
+         (CMU: false). revisar_giro:=false vuelve a CMU -->
+    <param name="checkRotObstacle" value="$(var revisar_giro)" />
     <param name="adjacentRange" value="3.0" />
     <param name="obstacleHeightThre" value="$(var altura_obstaculo)" />
     <param name="groundHeightThre" value="0.1" />
@@ -158,13 +170,19 @@
   <!-- filtro de fantasmas del L1: un punto cerca del perro se queda solo si se repite en las ultimas
        nubes (lo real se repite, el ruido no). El piso nunca se toca. Lo leen los dos analisis de terreno
        (los que deciden que es obstaculo); Point-LIO, FAR y el mapa usan la nube cruda.
-       filtro:=false lo apaga (pasa todo). fantasmas_min_puntos: mas alto = filtra mas. -->
+       filtro:=false lo apaga (pasa todo). fantasmas_min_puntos: mas alto = filtra mas.
+       Si existe ~/.go2_v2/fantasmas.yaml ('go2v2 calibrar-fantasmas') manda lo calibrado. -->
   <arg name="filtro" default="true"/>
   <arg name="fantasmas_min_puntos" default="5"/>
   <node pkg="go2_v2" exec="fantasmas" name="go2_fantasmas" output="screen" respawn="true" respawn_delay="1.0">
     <param name="activo" value="$(var filtro)" />
     <param name="min_puntos" value="$(var fantasmas_min_puntos)" />
   </node>
+  <!-- calibrar_fantasmas:=true -> al lanzar, el perro se para, da una vuelta despacio y calibra el filtro
+       (lo mismo que 'go2v2 calibrar-fantasmas'). Queda guardado: no hace falta hacerlo siempre -->
+  <arg name="calibrar_fantasmas" default="false"/>
+  <node pkg="go2_v2" exec="calibrar_fantasmas" name="go2_calibrar_fantasmas" output="screen"
+        if="$(var calibrar_fantasmas)"/>
 
   <!-- el mapa 3D que se arma mientras camina: /go2/mapa en RViz, 'go2v2 mapa' o G lo guarda (.pcd) -->
   <node pkg="go2_v2" exec="mapa" name="go2_mapa" output="screen" respawn="true" respawn_delay="2.0"/>

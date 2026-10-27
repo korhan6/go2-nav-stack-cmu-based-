@@ -7,7 +7,10 @@ Regla (go2_v2/filtros.py): un punto cerca del perro se queda solo si en su vecin
 hubo al menos 'min_puntos' puntos en las ultimas 'ventana' s. Lo real se repite nube tras nube en el
 mismo lugar; el ruido no. El piso nunca se toca (ver filtros.py). activo:=false -> pasa todo igual.
 Estado (JSON 1 Hz) en /go2/fantasmas_estado: puntos que entran, fantasmas sacados, ms.
+Calibracion: si existe ~/.go2_v2/fantasmas.yaml ('go2v2 calibrar-fantasmas') usa su min_puntos y ventana
+en vez de los del launch. /go2/fantasmas_recargar la vuelve a leer sin relanzar.
 """
+import os
 import array
 import json
 import time
@@ -32,6 +35,12 @@ class Fantasmas(Node):
         self.f = FiltroFantasmas(tam=float(P("voxel", 0.1).value), min_puntos=int(P("min_puntos", 5).value),
                                  ventana=float(P("ventana", 0.5).value), radio=float(P("radio", 4.0).value),
                                  z_min_rel=float(P("z_min_rel", -0.2).value))
+        self.archivo = os.path.expanduser(str(P("calibracion", "~/.go2_v2/fantasmas.yaml").value))
+        self.usar_calibracion = bool(P("usar_calibracion", True).value)
+        self.calibrado = None
+        self.cargar_calibracion()
+        from std_srvs.srv import Trigger
+        self.create_service(Trigger, "/go2/fantasmas_recargar", self.srv_recargar)
         self.centro = None
         self.odom = None
         self.pub = self.create_publisher(PointCloud2, "/registered_scan_limpia", 5)
@@ -46,6 +55,32 @@ class Fantasmas(Node):
         self.get_logger().info("go2_fantasmas %s: /registered_scan -> /registered_scan_limpia (min %d puntos "
                                "en %.1f s, radio %.1f m)" % ("ACTIVO" if self.activo else "apagado (pasa todo)",
                                                            self.f.min_puntos, self.f.ventana, self.f.radio))
+
+    def cargar_calibracion(self):
+        if not self.usar_calibracion:
+            return False
+        try:
+            import yaml
+            with open(self.archivo) as f:
+                d = yaml.safe_load(f) or {}
+            self.f.min_puntos = int(d["min_puntos"])
+            self.f.ventana = float(d["ventana"])
+            self.calibrado = {k: d.get(k) for k in ("min_puntos", "ventana", "guarda_real", "quita_fantasmas")}
+            self.get_logger().info("fantasmas CALIBRADO (%s): min_puntos %d, ventana %.2f s"
+                                   % (self.archivo, self.f.min_puntos, self.f.ventana))
+            return True
+        except FileNotFoundError:
+            self.get_logger().info("fantasmas sin calibrar (min_puntos %d, ventana %.2f s): 'go2v2 calibrar-fantasmas'"
+                                   % (self.f.min_puntos, self.f.ventana))
+        except Exception as e:      # archivo roto: sigue con los valores del launch
+            self.get_logger().warn("no pude leer %s (%s): sigo con min_puntos %d" % (self.archivo, e, self.f.min_puntos))
+        return False
+
+    def srv_recargar(self, _req, res):
+        res.success = self.cargar_calibracion()
+        res.message = ("min_puntos %d, ventana %.2f s" % (self.f.min_puntos, self.f.ventana) if res.success
+                       else "sin calibracion en %s" % self.archivo)
+        return res
 
     def cb_odom(self, m):
         self.odom = m
@@ -97,6 +132,9 @@ class Fantasmas(Node):
         e = dict(self.est)
         e["ms"] = round(e["ms"], 2)
         e["activo"] = self.activo
+        e["min_puntos"] = self.f.min_puntos
+        e["ventana"] = self.f.ventana
+        e["calibrado"] = self.calibrado is not None
         self.pub_est.publish(String(data=json.dumps(e)))
         self.est = {"nubes": 0, "puntos": 0, "fantasmas": 0, "ms": 0.0}
 

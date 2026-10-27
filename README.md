@@ -65,22 +65,25 @@ go2v2 pausa                # freno de emergencia (otra vez para seguir)
 go2v2 estado               # demora, Hz, pose, estado del guardián
 ```
 
-**Control PS4:**
+**Control PS4** (por defecto SIN evasión: manejas tú; OPTIONS cambia a CON evasión):
 
 | Botón | Qué hace |
 |---|---|
-| Stick derecho | Manejar con evasión automática |
+| Stick izquierdo | Moverse: adelante / atrás / derecha / izquierda (de lado) |
+| Stick derecho | Girar |
+| CRUZ | Acostar |
+| TRIÁNGULO | Levantar |
+| CÍRCULO | Pausa (freno de emergencia; otra vez para seguir) |
+| OPTIONS | Sin evasión ↔ con evasión (mismos sticks; CMU esquiva solo) |
 | L2 sostenido | Modo autónomo (sigue la meta) |
-| R2 sostenido | Manual **sin** evasión |
 | R1 | Borra el mapa de terreno |
 | L1 | Borra el grafo de rutas de FAR (lo de CMU) |
-| CÍRCULO | Pausa |
-| SHARE + CRUZ | Acostar |
-| SHARE + TRIÁNGULO | Levantar |
 | SHARE + CUADRADO | Bloquear / desbloquear |
 | SHARE + CÍRCULO | Recuperar (RecoveryStand: se cayó o quedó raro) |
 
-Las combinaciones van con SHARE porque CMU ya usa L1 y R1.
+**Llegada a la meta:** si la meta le queda de frente llega hasta ella; si queda al costado o atrás se
+para a ~30 cm sin girar en el sitio. Desde 1.5 m frena en rampa y al llegar se queda quieto hasta otra
+meta (o hasta que muevas el control). Ajustes en `config/guardian.yaml` (`llegada_suave`, `frenar_desde`...).
 
 ## Manejar con el teclado y armar el mapa
 
@@ -95,7 +98,34 @@ go2v2 mapa-borrar          # empezar el mapa de cero
 Mantener la tecla = camina; soltarla = frena. El mapa se ve en RViz (display **Mapa**, color por altura).
 El .pcd se abre con CloudCompare u Open3D. Todavia es solo para verlo: la navegacion no lo recarga.
 
+## Esquivar (26/10: a veces se iba de frente contra una persona)
+
+Tres cosas, ninguna es "subir o bajar la resolucion" del lidar:
+
+- **Pisadas solo con fantasmas confirmados**: antes, por donde el perro ya habia caminado se borraba todo
+  lo bajo (< 70 cm) PARA SIEMPRE: si una persona se paraba ahi, sus piernas desaparecian. Ahora solo se
+  borra una celda si el cuerpo del perro estuvo encima MIENTRAS el mapa decia que habia algo (eso prueba
+  que era un fantasma). Lo que aparece despues (una persona) se ve normal.
+- **Zona ciega del lidar 0.5 -> 0.3 m** (`ciego:=0.5` vuelve a CMU): Point-LIO tiraba todo lo que estaba a
+  menos de medio metro del L1 (va en la nariz); el mapa recordaba a la persona 2 s y despues el perro
+  avanzaba. La caja que borra las propias patas ahora llega a +5 cm delante del L1 (`caja_adelante`).
+- **Freno de cercania** en el guardian (config/guardian.yaml, `freno_*`): si hay algo a menos de ~30 cm
+  (+40 cm por m/s) de la nariz, la cola o el costado hacia donde se mueve, no se mueve hacia ahi (girar y
+  alejarse si). Es aparte del planificador. No aplica manejando sin evasion. `go2v2 estado`: "freno".
+- Al girar en el sitio revisa que la cola/cabeza no barra nada (`revisar_giro:=false` vuelve a CMU).
+
 ## Fantasmas del lidar
+
+**Calibrar el filtro** (una vez por lugar/perro, queda guardado en `~/.go2_v2/fantasmas.yaml`):
+
+```bash
+go2v2 calibrar-fantasmas          # con 'go2v2 lanzar' corriendo: se para, da UNA vuelta despacio (~20 s)
+go2v2 lanzar calibrar_fantasmas:=true   # o que lo haga solo al lanzar
+```
+
+Separa lo real (aparece en muchas nubes) del ruido (puntos sueltos) y elige `min_puntos` y `ventana`: el
+que mas ruido saca guardando >= 97 % de lo real. Deja ~1 m libre alrededor; mejor cerca de paredes y muebles.
+
 
 El L1 tira puntos sueltos que el planificador toma como obstaculos. Dos reglas:
 

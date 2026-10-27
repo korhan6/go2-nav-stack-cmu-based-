@@ -1,8 +1,8 @@
 """go2_guardian: el unico nodo que le habla al perro (ver guardian_logica.py).
 
   /cmd_vel (geometry_msgs/TwistStamped, pathFollower de CMU)  -> /api/sport/request (Move/StopMove)
-  /joy (PS4, solo el control fisico) -> SHARE+CRUZ acostar | SHARE+TRIANGULO levantar |
-                                    SHARE+CUADRADO bloquear | SHARE+CIRCULO recuperar | CIRCULO pausa
+  /joy (PS4, solo el control fisico) -> CRUZ acostar | TRIANGULO levantar | CIRCULO pausa |
+                                    SHARE+CUADRADO bloquear | SHARE+CIRCULO recuperar
                                     (L1 y R1 los usa CMU: borrar grafo de rutas / mapa de terreno)
   /terrain_map (solo la hora)    -> sin mapa de terreno > 1.5 s: quieto (la evasion no ve)
   servicios std_srvs/Trigger     -> /go2/acostar /go2/levantar /go2/bloquear /go2/desbloquear
@@ -17,6 +17,7 @@ import json
 import threading
 import time
 
+import numpy as np
 import rclpy
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
@@ -58,7 +59,17 @@ class NodoGuardian(Node):
                           suavizado=(None if not bool(P("suavizar", True).value) else
                                      {k: float(P(k, v).value) for k, v in (
                                          ("acc_lin", 0.8), ("dec_lin", 1.5), ("acc_lat", 0.6), ("dec_lat", 1.2),
-                                         ("acc_giro", 2.0), ("dec_giro", 3.0), ("tau_giro", 0.15))}))
+                                         ("acc_giro", 2.0), ("dec_giro", 3.0), ("tau_giro", 0.15))}),
+                          llegada=(None if not bool(P("llegada_suave", True).value) else
+                                   {k: float(P(k, v).value) for k, v in (
+                                       ("frenar_desde", 1.5), ("d_llegada", 0.4), ("v_lejos", 0.5),
+                                       ("v_llegada", 0.25), ("giro_llegada", 0.5))}),
+                          freno=(None if not bool(P("freno_cercania", True).value) else
+                                 {k: float(P("freno_" + k, v).value) for k, v in (
+                                     ("largo", 0.70), ("ancho", 0.36), ("margen", 0.30), ("margen_v", 0.4))}))
+        self.freno_alto = float(P("freno_alto", 0.25).value)    # m sobre el piso: desde aca es obstaculo
+        self.terreno_raw = None
+        self.pose_lidar = None
         self.apagar_evita = bool(P("apagar_evitacion_unitree", True).value)
         self.lock = threading.Lock()
         self.ids = itertools.count(int(time.time() * 1000) % 1_000_000_000)   # seguro entre hilos
@@ -81,6 +92,10 @@ class NodoGuardian(Node):
         self.create_subscription(Odometry, "/state_estimation", self.cb_odom, qos_profile_sensor_data,
                                  callback_group=grupo, raw=True)
         self.create_timer(0.1, self.revisar_pose, callback_group=MutuallyExclusiveCallbackGroup())
+        # freno de cercania: los obstaculos del mapa de terreno pegados al cuerpo, 10 Hz
+        self.create_timer(0.1, self.revisar_cerca, callback_group=MutuallyExclusiveCallbackGroup())
+        # distancia a la meta y si llego (go2_metas): frena al llegar y se queda quieto en la meta
+        self.create_subscription(String, "/go2/llegada", self.cb_llegada, 5, callback_group=grupo)
         for nombre, fn in (("acostar", self.g.acostar), ("levantar", self.g.levantar),
                            ("bloquear", self.g.bloquear), ("desbloquear", self.g.desbloquear),
                            ("pausa", self.g.alternar_pausa), ("recuperar", self.g.recuperar),
@@ -99,8 +114,8 @@ class NodoGuardian(Node):
         self.t_ultimo_avance_odom = None
         self.mandar([(API_STOPMOVE, None)])
         self.get_logger().info("go2_guardian listo: /cmd_vel -> perro (Move a %.0f Hz, StopMove si la orden "
-                               "se vence %.2f s). PS4: SHARE+CRUZ acostar, SHARE+TRIANGULO levantar, "
-                               "SHARE+CUADRADO bloquear, SHARE+CIRCULO recuperar, CIRCULO pausa"
+                               "se vence %.2f s). PS4: CRUZ acostar, TRIANGULO levantar, CIRCULO pausa, "
+                               "SHARE+CUADRADO bloquear, SHARE+CIRCULO recuperar"
                                % (1.0 / self.g.periodo, self.g.vigencia))
 
     def ahora(self):
@@ -146,9 +161,37 @@ class NodoGuardian(Node):
             )
             self.n_cmd += 1
 
-    def cb_terreno(self, _m):
+    def cb_terreno(self, m):
+        self.terreno_raw = m
         with self.lock:
             self.g.terreno(self.ahora())
+
+    def revisar_cerca(self):
+        """Obstaculos (freno_alto < altura < 1.49: sin las 'paredes sin datos') a menos de 1.2 m, en el marco
+        del centro del cuerpo -> guardian (freno de cercania)."""
+        m, pose = self.terreno_raw, self.pose_lidar
+        if m is None or pose is None or self.g.freno is None:
+            return
+        if isinstance(m, (bytes, bytearray)):
+            from rclpy.serialization import deserialize_message
+            m = deserialize_message(m, PointCloud2)
+        n = m.width * m.height
+        campos = {f.name: f.offset for f in m.fields}
+        if n == 0 or not all(k in campos for k in ("x", "y", "z", "intensity")):
+            xy = np.zeros((0, 2))
+        else:
+            from .filtros import xyz_de_nube
+            xyz, crudo = xyz_de_nube(m.data, n, m.point_step, [campos[c] for c in ("x", "y", "z")])
+            o = campos["intensity"]
+            h = np.ascontiguousarray(crudo[:, o:o + 4]).view(np.float32)[:, 0]
+            x, y, yaw = pose
+            cx, cy = x - self.g.sensor_x * math.cos(yaw), y - self.g.sensor_x * math.sin(yaw)
+            dx, dy = xyz[:, 0] - cx, xyz[:, 1] - cy
+            k = (h > self.freno_alto) & (h < 1.49) & (dx * dx + dy * dy < 1.44)
+            c, s = math.cos(yaw), math.sin(yaw)
+            xy = np.c_[c * dx[k] + s * dy[k], -s * dx[k] + c * dy[k]]
+        with self.lock:
+            self.g.obstaculos(self.ahora(), xy)
 
     def cb_odom(self, m):
         self.odom_raw = m
@@ -162,8 +205,17 @@ class NodoGuardian(Node):
             m = deserialize_message(m, Odometry)
         p, q = m.pose.pose.position, m.pose.pose.orientation
         yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        self.pose_lidar = (p.x, p.y, yaw)
         with self.lock:
             self.g.pose(self.ahora(), p.x, p.y, yaw)
+
+    def cb_llegada(self, m):
+        try:
+            d = json.loads(m.data)
+        except ValueError:
+            return
+        with self.lock:
+            self.g.meta(self.ahora(), d.get("d"), d.get("llego", False))
 
     def cb_lidar(self, _m):
         with self.lock:
@@ -175,15 +227,24 @@ class NodoGuardian(Node):
                 self.g.modo_manual(list(m.axes))     # A/D/S/Z/C van en manual (R2): sin anti-giro
                 if any(abs(a) > 0.05 for i, a in enumerate(m.axes) if i in (0, 3, 4)):
                     self.g.orden_usuario()
+                    self.g.palanca(self.ahora())
             return
         if m.header.frame_id in JOY_AJENOS:
             with self.lock:
                 self.g.orden_usuario()               # meta nueva (RViz, go2v2 ir/parar)
             return
+        # el joy_node publica 20 veces por segundo aunque nadie toque nada: solo cuenta como orden del
+        # usuario si mueve un stick, aprieta un gatillo o un boton (antes cada mensaje borraba al toque los
+        # frenos 'da vueltas' y 'SLAM corrido')
+        ejes = list(m.axes)
+        palancas = any(abs(a) > 0.12 for i, a in enumerate(ejes) if i in (0, 1, 3, 4))
+        gatillos = any(i < len(ejes) and ejes[i] < -0.1 for i in (2, 5))
         with self.lock:
-            self.g.orden_usuario()                   # el PS4
-        with self.lock:
-            out = self.g.joystick(self.ahora(), list(m.buttons), list(m.axes))
+            if palancas or gatillos or any(m.buttons):
+                self.g.orden_usuario()               # el PS4
+            if palancas:
+                self.g.palanca(self.ahora())
+            out = self.g.joystick(self.ahora(), list(m.buttons), ejes)
         self.mandar(out)
 
     def _srv(self, nombre, fn):
@@ -250,6 +311,7 @@ class NodoGuardian(Node):
                  "parado_por": g.motivo_parada,
                  "edad_odom_s": None if g.edad_odom is None else round(g.edad_odom, 3),
                  "slam_dudoso": g.slam_dudoso, "salto": g.salto, "vueltas": g.vueltas, "incoherente": g.incoherente,
+                 "meta_m": g.meta_dist, "en_meta": g.meta_llego, "freno": g.freno_activo,
                  "terreno_hace_s": None if g.t_terreno is None else round(self.ahora() - g.t_terreno, 2),
                  "lidar_hace_s": None if g.t_lidar is None else round(self.ahora() - g.t_lidar, 2)}
             self.n_cmd = 0

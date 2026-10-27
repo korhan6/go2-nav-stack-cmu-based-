@@ -20,6 +20,9 @@ de terreno, L2 = modo autonomo, R2 = modo manual. Por eso las combinaciones van 
 Cada paso devuelve la lista de pedidos (api_id, parametros|None) a mandar.
 """
 import math
+
+import numpy as np
+
 API_DAMP = 1001
 API_BALANCESTAND = 1002
 API_STOPMOVE = 1003
@@ -43,7 +46,7 @@ class Guardian(object):
     def __init__(self, vx_max=1.0, vy_max=0.6, wz_max=1.5, vigencia=0.25, periodo=0.02,
                  freewalk=True, zona_muerta=0.01, v_min_caminar=0.0, odom_max=0.6, terreno_max=1.5,
                  lidar_max=0.0, giro_max=0.0, salto_vel=0.0, salto_giro=0.0, vueltas_rad=0.0,
-                 vueltas_s=8.0, sensor_x=0.3, coherencia_m=0.0, suavizado=None):
+                 vueltas_s=8.0, sensor_x=0.3, coherencia_m=0.0, suavizado=None, llegada=None, freno=None):
         self.vx_max, self.vy_max, self.wz_max = vx_max, vy_max, wz_max
         self.vigencia = vigencia
         self.periodo = periodo
@@ -91,6 +94,27 @@ class Guardian(object):
         # None = sin suavizado. dict: acc_lin, dec_lin, acc_lat, dec_lat, acc_giro, dec_giro, tau_giro
         self.suavizado = suavizado
         self.suave = (0.0, 0.0, 0.0)
+        # FRENO DE CERCANIA (26/10: a veces se iba de frente contra una persona): ultima red de seguridad,
+        # aparte del planificador. Con los obstaculos del mapa de terreno en el marco del cuerpo: si hay algo
+        # a menos de 'margen' (+ 'margen_v' x velocidad) de la nariz, no avanza; lo mismo atras y a los
+        # costados (de lado). Girar y alejarse si se puede. No aplica en manual (R2 / PS4 sin evasion).
+        # None = sin freno. dict: largo, ancho (cuerpo), margen, margen_v
+        self.freno = freno
+        self.obs_cuerpo = None
+        self.t_obs = -1e9
+        self.freno_activo = None
+        # LLEGADA (26/10: navegaba bien pero al llegar daba circulos, giraba a un lado y al otro y la pose se
+        # corria en RViz): cerca de la meta la direccion al punto cambia con cada cm, el seguidor de CMU
+        # manda ordenes chiquitas a un lado y al otro y el perro pisa en el sitio. Desde 'frenar_desde' m
+        # baja el tope de velocidad y giro en rampa hasta 'v_llegada' / 'giro_llegada' a 'd_llegada' m, y
+        # cuando go2_metas dice que llego se queda QUIETO (rampa a cero) hasta otra meta o las palancas.
+        # None = sin esto. dict: frenar_desde, d_llegada, v_lejos, v_llegada, giro_llegada
+        self.llegada = llegada
+        self.meta_dist = None
+        self.meta_llego = False
+        self.t_meta = -1e9
+        self.t_palanca = -1e9           # ultima vez que alguien movio las palancas (PS4 / teclado)
+        self.en_meta_avisado = False
         self.envios = []            # [(t, vx, vy, wz enviados)]
         self.poses = []             # [(t, x, y, yaw)]
         self.centros = []           # distancia lidar -> centro de giro, una por giro en el sitio
@@ -203,6 +227,76 @@ class Guardian(object):
                                     % (abs(med), "adelante" if med > 0 else "ATRAS"))
                 self.avisos.append("PARO: " + self.incoherente)
 
+    def meta(self, t, distancia, llego):
+        """De go2_metas (~5 Hz): distancia a la meta (None = sin meta) y si ya llego."""
+        self.meta_dist = distancia
+        self.meta_llego = bool(llego) and distancia is not None
+        self.t_meta = t
+        if not self.meta_llego:
+            self.en_meta_avisado = False
+
+    def palanca(self, t):
+        """Alguien esta manejando (sticks del PS4 o teclado): la llegada no se mete."""
+        self.t_palanca = t
+
+    def _llegando(self, t):
+        """Distancia a la meta si hay que aplicar la llegada suave, si no None."""
+        if self.llegada is None or self.manual or self.meta_dist is None:
+            return None
+        if t - self.t_meta > 1.0 or t - self.t_palanca < 1.0:
+            return None
+        return self.meta_dist
+
+    def _frenar_llegada(self, t, vx, vy, wz):
+        d = self._llegando(t)
+        if d is None:
+            return vx, vy, wz
+        if self.meta_llego:
+            if not self.en_meta_avisado:
+                self.en_meta_avisado = True
+                self.avisos.append("llego a la meta (a %.2f m): quieto hasta otra meta" % d)
+            return 0.0, 0.0, 0.0
+        L = self.llegada
+        if d >= L["frenar_desde"]:
+            return vx, vy, wz
+        f = max(0.0, min(1.0, (d - L["d_llegada"]) / max(L["frenar_desde"] - L["d_llegada"], 1e-3)))
+        vtope = L["v_llegada"] + f * (L["v_lejos"] - L["v_llegada"])
+        wtope = L["giro_llegada"] + f * (self.wz_max - L["giro_llegada"])
+        v = (vx * vx + vy * vy) ** 0.5
+        if v > vtope:
+            vx, vy = vx * vtope / v, vy * vtope / v
+        return vx, vy, recortar(wz, wtope)
+
+    def obstaculos(self, t, xy):
+        """Obstaculos cercanos (n, 2) en el marco del CENTRO del cuerpo (x adelante, y izquierda)."""
+        self.obs_cuerpo = np.asarray(xy, np.float64).reshape(-1, 2)
+        self.t_obs = t
+
+    def _frenar_cerca(self, t, vx, vy):
+        F = self.freno
+        if F is None or self.manual or self.obs_cuerpo is None or t - self.t_obs > 1.0:
+            self.freno_activo = None
+            return vx, vy
+        o = self.obs_cuerpo
+        x, y = o[:, 0], o[:, 1]
+        hl, hw = F["largo"] / 2, F["ancho"] / 2
+        mx = F["margen"] + F["margen_v"] * abs(vx)
+        my = 0.7 * F["margen"] + F["margen_v"] * abs(vy)
+        motivo = None
+        if vx > 0 and np.any((x > hl) & (x < hl + mx) & (np.abs(y) < hw)):
+            vx, motivo = 0.0, "adelante"
+        elif vx < 0 and np.any((x < -hl) & (x > -hl - mx) & (np.abs(y) < hw)):
+            vx, motivo = 0.0, "atras"
+        if vy > 0 and np.any((y > hw) & (y < hw + my) & (np.abs(x) < hl)):
+            vy, motivo = 0.0, motivo or "a la izquierda"
+        elif vy < 0 and np.any((y < -hw) & (y > -hw - my) & (np.abs(x) < hl)):
+            vy, motivo = 0.0, motivo or "a la derecha"
+        if motivo and motivo != self.freno_activo:
+            self.avisos.append("FRENO: algo a menos de %.0f cm %s del perro (el planificador queria ir para alla)"
+                               % (100 * (mx if motivo in ("adelante", "atras") else my), motivo))
+        self.freno_activo = motivo
+        return vx, vy
+
     def orden_usuario(self):
         """Meta nueva, teclado o PS4: se olvida el 'da vueltas' y el 'no avanza'."""
         self.vueltas = None
@@ -311,9 +405,10 @@ class Guardian(object):
         return self._cortar(t) if self.pausa else []
 
     def joystick(self, t, botones, ejes=()):
-        """Combinaciones del PS4 (flanco de subida), con SHARE sostenido (L1 y R1 son de CMU):
-        SHARE + CRUZ = acostar, SHARE + TRIANGULO = levantar, SHARE + CUADRADO = bloquear/desbloquear,
-        SHARE + CIRCULO = recuperar (RecoveryStand). CIRCULO solo = pausa (freno de emergencia)."""
+        """Botones del PS4 (flanco de subida; L1 y R1 son de CMU):
+        CRUZ = acostar, TRIANGULO = levantar, CIRCULO = pausa (freno de emergencia),
+        SHARE + CUADRADO = bloquear/desbloquear, SHARE + CIRCULO = recuperar (RecoveryStand).
+        (SHARE + CRUZ / SHARE + TRIANGULO tambien acuestan / levantan, como antes)"""
         prev = self.botones_prev
         self.botones_prev = list(botones)
         self.manual = len(ejes) > EJE_R2 and ejes[EJE_R2] < -0.1
@@ -326,12 +421,12 @@ class Guardian(object):
             i = BOTON[nombre]
             return i < len(botones) and bool(botones[i])
         out = []
-        if sostenido("share"):
-            if apretado("cruz"):
-                out += self.acostar(t)
-            elif apretado("triangulo"):
-                out += self.levantar(t)
-            elif apretado("cuadrado"):
+        if apretado("cruz"):
+            out += self.acostar(t)
+        elif apretado("triangulo"):
+            out += self.levantar(t)
+        elif sostenido("share"):
+            if apretado("cuadrado"):
                 out += self.desbloquear(t) if self.bloqueado else self.bloquear(t)
             elif apretado("circulo"):
                 out += self.recuperar(t)
@@ -414,6 +509,8 @@ class Guardian(object):
             k = min(k, self.vy_max / abs(vy))
         vx, vy = vx * k, vy * k
         wz = recortar(self.cmd[2], self.wz_max)
+        vx, vy, wz = self._frenar_llegada(t, vx, vy, wz)
+        vx, vy = self._frenar_cerca(t, vx, vy)
         z = self.zona_muerta
         objetivo_cero = abs(vx) < z and abs(vy) < z and abs(wz) < z
         if self.suavizado is not None and (self.moviendo or not objetivo_cero):
